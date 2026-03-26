@@ -255,7 +255,8 @@ async def handle_message(message: Message):
     # _extract_ref_id вернёт None если hash отсутствует или не является числом.
     if _is_start_event(payload, text):
         ref_id = _extract_ref_id(payload, text)
-        logger.info(f"[start-event] user={vk_id}, ref_id={ref_id}, payload={payload}")
+        logger.info(
+            f"[start-event] user={vk_id}, ref_id={ref_id}, payload={payload}, text={text!r}, raw_payload={message.payload!r}")
         await _handle_start(message, ref=ref_id)
         return
 

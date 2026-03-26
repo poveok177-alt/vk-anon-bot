@@ -33,7 +33,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-init_db()
 
 bot = Bot(token=VK_TOKEN)
 api: API = bot.api
@@ -579,25 +578,29 @@ def _ad_should_show(ad: dict, place: str) -> bool:
         and bool(ad.get("text", "").strip())
     )
 
-
-# В конце файла, перед запуском
-import signal
-
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ ИНИЦИАЛИЗАЦИИ БАЗЫ ---
+async def startup_db():
+    logger.info("Инициализация базы данных...")
+    try:
+        await init_db()  # Теперь вызываем правильно через await
+        logger.info("✅ База данных успешно инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
 
 async def shutdown():
     logger.info("Остановка бота...")
     await close_db()
-    logger.info("База данных закрыта")
-
+    logger.info("Соединение с БД закрыто")
 
 if __name__ == "__main__":
     logger.info("✅ VK-бот запускается...")
 
-    # Добавляем обработку сигналов для корректного завершения
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+    # Добавляем инициализацию базы первой в очередь задач
+    bot.loop_wrapper.add_task(startup_db())
 
+    # Твои фоновые задачи (оставляем как были)
     bot.loop_wrapper.add_task(send_reminders(api))
     bot.loop_wrapper.add_task(cleanup_task())
+
+    # Запуск цикла бота
     bot.run_forever()

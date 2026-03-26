@@ -23,6 +23,8 @@ CLEANUP_INTERVAL_HOURS = 24
 
 async def send_reminders(api: API):
     """Каждые 6 часов напоминаем неактивным пользователям о боте."""
+    # Ждем 5 секунд, пока main.py создаст таблицы
+    await asyncio.sleep(5)
     while True:
         try:
             inactive = await get_inactive_users(days=INACTIVE_DAYS)

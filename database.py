@@ -480,24 +480,27 @@ async def get_last_messages(vk_id: int, limit: int = 5) -> list[dict]:
 
 
 async def delete_old_messages(days: int = 30):
-    cutoff = _now_ts() - timedelta(days=days)
+    # Добавляем timezone.utc, чтобы время было "aware"
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
     if USE_SQLITE:
         def _f():
             import sqlite3
             from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                cur = c.execute("DELETE FROM messages WHERE created_at<? AND is_deleted=1", (cutoff.isoformat(),))
+                # Для SQLite используем isoformat
+                cur = c.execute("DELETE FROM messages WHERE created_at < ? AND is_deleted = 1", (cutoff.isoformat(),))
                 return cur.rowcount
+
         deleted = await asyncio.to_thread(_f)
         logger.info(f"[DB] Удалено старых сообщений: {deleted}")
         return
 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
+        # Для PostgreSQL asyncpg сам поймет объект cutoff с таймзоной
         result = await conn.execute("DELETE FROM messages WHERE created_at < $1 AND is_deleted = 1", cutoff)
-        deleted = result.split()[-1]
-        logger.info(f"[DB] Удалено старых сообщений: {deleted}")
-
+        logger.info(f"[DB] Очистка завершена: {result}")
 
 # ─── BLOCKED ──────────────────────────────────────────────────────────────────
 

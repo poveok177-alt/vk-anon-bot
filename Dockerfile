@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Устанавливаем зависимости системы для сборки Rust-пакетов
+# Устанавливаем компилятор и системные зависимости, необходимые для сборки Rust-пакетов
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libc6-dev \

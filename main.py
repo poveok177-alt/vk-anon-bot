@@ -27,6 +27,7 @@ from states import (
 )
 from anon_message import send_anon_message, handle_reply, handle_report
 from tasks import send_reminders, cleanup_task
+from web import start_web
 import admin as adm
 
 logging.basicConfig(
@@ -255,8 +256,7 @@ async def handle_message(message: Message):
     # _extract_ref_id вернёт None если hash отсутствует или не является числом.
     if _is_start_event(payload, text):
         ref_id = _extract_ref_id(payload, text)
-        logger.info(
-            f"[start-event] user={vk_id}, ref_id={ref_id}, payload={payload}, text={text!r}, raw_payload={message.payload!r}")
+        logger.info(f"[start-event] user={vk_id}, ref_id={ref_id}, payload={payload}")
         await _handle_start(message, ref=ref_id)
         return
 
@@ -713,6 +713,7 @@ async def startup_db():
     try:
         await init_db()
         logger.info("✅ База данных успешно инициализирована")
+        await start_web(api)
         bot.loop_wrapper.add_task(send_reminders(api))
         bot.loop_wrapper.add_task(cleanup_task())
     except Exception as e:

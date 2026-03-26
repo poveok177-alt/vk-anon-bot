@@ -14,7 +14,7 @@ from database import (
     set_notifications, get_blocked_list, unblock_user,
     block_user, get_message, get_ad, set_ad,
     get_last_messages, mark_deleted, close_db,
-    USE_SQLITE, DatabasePool # ДОБАВЬ ЭТИ ДВА ИМПОРТА
+    USE_SQLITE, DatabasePool,
 )
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
@@ -33,7 +33,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
-
 
 bot = Bot(token=VK_TOKEN)
 api: API = bot.api
@@ -69,9 +68,15 @@ async def send_main_menu(vk_id: int, text: str | None = None):
 
 
 async def _handle_start(message: Message, ref: int | None):
+    """
+    Центральная функция обработки /start.
+    Если ref задан — переводит пользователя к вводу анонимки.
+    Иначе — показывает главное меню.
+    """
     vk_id = message.from_id
-    logger.info(f"Обработка /start для {vk_id}, ref={ref}")
+    logger.info(f"[start] user={vk_id}, ref={ref}")
 
+    # Получаем имя пользователя из VK API
     try:
         info = await api.users.get(user_ids=[vk_id])
         first_name = info[0].first_name if info else ""
@@ -82,6 +87,7 @@ async def _handle_start(message: Message, ref: int | None):
     await get_or_create_user(vk_id, first_name, last_name)
     clear_state(vk_id)
 
+    # Уведомляем администратора
     try:
         await api.messages.send(
             user_id=ADMIN_VK_ID,
@@ -91,6 +97,7 @@ async def _handle_start(message: Message, ref: int | None):
     except Exception:
         pass
 
+    # Если есть реферал — предлагаем написать анонимку
     if ref and ref != vk_id:
         target = await get_user(ref)
         if target and not target.get("is_banned"):
@@ -112,29 +119,19 @@ async def _handle_start(message: Message, ref: int | None):
     await send_main_menu(vk_id)
 
 
-# ─── /start (без параметра) ───────────────────────────────────────────────
-@bot.on.message(text="/start")
-async def cmd_start_plain(message: Message):
-    logger.info(f"cmd_start_plain: от {message.from_id}")
-    await _handle_start(message, ref=None)
+def _ad_should_show(ad: dict, place: str) -> bool:
+    """Проверяет, нужно ли показывать рекламу в данном месте."""
+    return (
+        bool(ad.get("enabled", 0))
+        and ad.get("place", "AFTER_SEND") == place
+        and bool(ad.get("text", "").strip())
+    )
 
 
-# ─── /start с параметром через текст ─────────────────────────────────────
-@bot.on.message(text="/start <ref>")
-async def cmd_start_ref(message: Message, ref: str = ""):
-    logger.info(f"cmd_start_ref: от {message.from_id}, ref='{ref}'")
-    ref_clean = ref.strip()
-    ref_id = int(ref_clean) if ref_clean.isdigit() else None
-    await _handle_start(message, ref=ref_id)
+# ─── ЕДИНЫЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ ────────────────────────────────────────
+# Все обработчики объединены в один, чтобы избежать двойной отправки
+# (vkbottle по умолчанию вызывает ВСЕ совпадающие хендлеры).
 
-
-@bot.on.message(text="/menu")
-@bot.on.message(text="/help")
-async def cmd_menu(message: Message):
-    await send_main_menu(message.from_id)
-
-
-# ─── ОСНОВНОЙ ОБРАБОТЧИК ──────────────────────────────────────────────────
 @bot.on.message()
 async def handle_message(message: Message):
     vk_id = message.from_id
@@ -143,13 +140,29 @@ async def handle_message(message: Message):
     cmd = payload.get("cmd", "")
 
     # ── Кнопка «Начать» / переход по реферальной ссылке ─────────────────
-    # VK отправляет {"command": "start", "hash": "USER_ID"} при открытии
-    # ссылки вида https://vk.me/GROUP?start=USER_ID
-    if payload.get("command") == "start":
+    # VK отправляет {"command": "start", "hash": "USER_ID"} при нажатии
+    # кнопки "Начать" после перехода по vk.me/GROUP?start=USER_ID
+    # Также обрабатываем текст "Начать" на случай, если payload не пришёл
+    if payload.get("command") == "start" or text in ("Начать", "Start"):
         hash_val = str(payload.get("hash", "")).strip()
         ref_id = int(hash_val) if hash_val.isdigit() else None
-        logger.info(f"Referral via payload command=start, hash='{hash_val}', ref_id={ref_id}, user={vk_id}")
+        logger.info(f"[referral] user={vk_id}, hash='{hash_val}', ref_id={ref_id}")
         await _handle_start(message, ref=ref_id)
+        return
+
+    # ── Команды /start ───────────────────────────────────────────────────
+    if text == "/start":
+        await _handle_start(message, ref=None)
+        return
+
+    if text.startswith("/start "):
+        ref_part = text[7:].strip()
+        ref_id = int(ref_part) if ref_part.isdigit() else None
+        await _handle_start(message, ref=ref_id)
+        return
+
+    if text in ("/menu", "/help"):
+        await send_main_menu(vk_id)
         return
 
     await get_or_create_user(vk_id)
@@ -262,6 +275,10 @@ async def handle_message(message: Message):
             return
         data = get_data(vk_id)
         target_id = data.get("target_id")
+        if not target_id:
+            clear_state(vk_id)
+            await send_main_menu(vk_id)
+            return
         ok, err = await send_anon_message(api, vk_id, target_id, text)
         clear_state(vk_id)
         if ok:
@@ -273,7 +290,7 @@ async def handle_message(message: Message):
             await api.messages.send(
                 user_id=vk_id,
                 message=(
-                    f"✅ Вы отправили анонимное сообщение!\n\n"
+                    f"✅ Сообщение отправлено, ожидайте ответ!\n\n"
                     f"💌 Начните получать анонимные сообщения прямо сейчас!\n\n"
                     f"👉 {sender_link}\n\n"
                     f"Разместите эту ссылку ☝️ к себе на страницу, чтобы вам могли написать 💬"
@@ -587,24 +604,13 @@ async def handle_message(message: Message):
     await send_main_menu(vk_id)
 
 
-def _ad_should_show(ad: dict, place: str) -> bool:
-    """Проверяет, нужно ли показывать рекламу в данном месте."""
-    return (
-        bool(ad.get("enabled", 0))
-        and ad.get("place", "AFTER_SEND") == place
-        and bool(ad.get("text", "").strip())
-    )
-
 async def startup_db():
     logger.info("Инициализация базы данных...")
     try:
         await init_db()
         logger.info("✅ База данных успешно инициализирована")
-
-        # Фоновые задачи запускаем после инициализации БД
         bot.loop_wrapper.add_task(send_reminders(api))
         bot.loop_wrapper.add_task(cleanup_task())
-
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
         raise

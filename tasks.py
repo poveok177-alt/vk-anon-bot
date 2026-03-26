@@ -5,6 +5,7 @@ tasks.py — Фоновые задачи:
 """
 
 import asyncio
+import random
 import logging
 from vkbottle import API
 
@@ -21,9 +22,13 @@ INACTIVE_DAYS = 3
 CLEANUP_INTERVAL_HOURS = 24
 
 
+def _rand() -> int:
+    return random.randint(1, 2_147_483_647)
+
+
 async def send_reminders(api: API):
     """Каждые 6 часов напоминаем неактивным пользователям о боте."""
-    # Ждем 5 секунд, пока main.py создаст таблицы
+    # Ждём, пока main.py создаст таблицы
     await asyncio.sleep(5)
     while True:
         try:
@@ -42,13 +47,14 @@ async def send_reminders(api: API):
                             f"Может, напомнишь о себе? Поделись ссылкой — и получай анонимные сообщения!\n\n"
                             f"🔗 {short_link}"
                         ),
-                        random_id=0,
+                        random_id=_rand(),  # Исправлено: был random_id=0
                     )
                     await update_last_active(uid)
                     await asyncio.sleep(0.05)
                 except Exception as e:
                     err_str = str(e).lower()
-                    if "privacy" in err_str or "can't send" in err_str:
+                    if "privacy" in err_str or "can't send" in err_str or "18" in err_str:
+                        # Пользователь закрыл личку — отключаем уведомления
                         await set_notifications(uid, False)
                     else:
                         logger.error(f"[reminders] uid={uid}: {e}")
@@ -63,6 +69,7 @@ async def cleanup_task():
     while True:
         try:
             await delete_old_messages(days=30)
+            logger.info("[cleanup] Очистка завершена")
         except Exception as e:
             logger.error(f"[cleanup] {e}")
         await asyncio.sleep(CLEANUP_INTERVAL_HOURS * 3600)

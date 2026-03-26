@@ -65,23 +65,37 @@ async def cmd_admin(api: API, admin_id: int):
 async def cmd_stats(api: API, admin_id: int):
     total = await get_total_users()
 
-    # Получаем статистику через существующие функции
-    # Для SQLite нужно отдельно считать сообщения и жалобы
     try:
-        from database import _conn
-        import asyncio
+        from database import get_db_stats
+        db_stats = await get_db_stats()
+        msgs_total = db_stats.get("messages", 0)
+        banned = db_stats.get("banned", 0)
 
-        def _counts():
-            with _conn() as c:
-                msgs_total = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                msgs_today = c.execute(
-                    "SELECT COUNT(*) FROM messages WHERE date(created_at)=date('now')"
-                ).fetchone()[0]
-                banned = c.execute("SELECT COUNT(*) FROM banned").fetchone()[0]
-                reports = c.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
-            return msgs_total, msgs_today, banned, reports
+        # msgs_today требует отдельного запроса — считаем через существующие функции
+        from database import USE_SQLITE
+        if USE_SQLITE:
+            import asyncio
+            import sqlite3
+            from config import DB_PATH
 
-        msgs_total, msgs_today, banned, reports = await asyncio.to_thread(_counts)
+            def _today():
+                with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
+                    msgs_today = c.execute(
+                        "SELECT COUNT(*) FROM messages WHERE date(created_at)=date('now')"
+                    ).fetchone()[0]
+                    reports = c.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
+                return msgs_today, reports
+
+            msgs_today, reports = await asyncio.to_thread(_today)
+        else:
+            from database import DatabasePool
+            pool = await DatabasePool.get_pool()
+            async with pool.acquire() as conn:
+                from datetime import date
+                msgs_today = await conn.fetchval(
+                    "SELECT COUNT(*) FROM messages WHERE created_at::date = CURRENT_DATE"
+                )
+                reports = await conn.fetchval("SELECT COUNT(*) FROM reports")
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
         msgs_total = msgs_today = banned = reports = 0

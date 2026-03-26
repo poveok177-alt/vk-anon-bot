@@ -192,11 +192,12 @@ def _init_sqlite(c):
             enabled  INTEGER DEFAULT 0,
             text     TEXT    DEFAULT '',
             url      TEXT    DEFAULT '',
-            btn_text TEXT    DEFAULT '📢 Реклама'
+            btn_text TEXT    DEFAULT '📢 Реклама',
+            place    TEXT    DEFAULT 'AFTER_SEND'
         );
 
-        INSERT OR IGNORE INTO ad_settings (id, enabled, text, url, btn_text)
-        VALUES (1, 0, '', '', '📢 Реклама');
+        INSERT OR IGNORE INTO ad_settings (id, enabled, text, url, btn_text, place)
+        VALUES (1, 0, '', '', '📢 Реклама', 'AFTER_SEND');
 
         CREATE INDEX IF NOT EXISTS idx_msg_receiver ON messages(receiver_id);
         CREATE INDEX IF NOT EXISTS idx_msg_sender   ON messages(sender_id);

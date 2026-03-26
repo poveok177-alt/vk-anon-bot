@@ -60,13 +60,18 @@ async def send_anon_message(api: API, sender_id: int, target_id: int, text: str)
     ad = await get_ad()
     ad_text = _ad_block_for_place(ad, "AFTER_RECEIVE")
 
+    # Проверяем, включены ли уведомления у получателя
+    if not target.get("notifications", 1):
+        return True, None
+
     try:
         await api.messages.send(
             user_id=target_id,
             message=(
                 f"💌 Тебе пришло анонимное сообщение!\n\n"
-                f"{text}{ad_text}\n\n"
+                f"{text}\n\n"
                 f"↩️ Нажми «Ответить», чтобы ответить анонимно."
+                f"{ad_text}"
             ),
             keyboard=message_actions_kb(msg_id),
             random_id=_rand(),

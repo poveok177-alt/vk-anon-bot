@@ -252,6 +252,14 @@ async def handle_message(message: Message):
         if not text:
             await api.messages.send(user_id=vk_id, message="⚠️ Отправь текстовое сообщение.", random_id=_rand())
             return
+        if len(text) > 4000:
+            await api.messages.send(
+                user_id=vk_id,
+                message="⚠️ Сообщение слишком длинное. Максимум 4000 символов.",
+                keyboard=cancel_kb(),
+                random_id=_rand(),
+            )
+            return
         data = get_data(vk_id)
         target_id = data.get("target_id")
         ok, err = await send_anon_message(api, vk_id, target_id, text)
@@ -287,6 +295,14 @@ async def handle_message(message: Message):
     if state == STATE_WAITING_REPLY:
         if not text:
             await api.messages.send(user_id=vk_id, message="⚠️ Отправь текстовое сообщение.", random_id=_rand())
+            return
+        if len(text) > 4000:
+            await api.messages.send(
+                user_id=vk_id,
+                message="⚠️ Сообщение слишком длинное. Максимум 4000 символов.",
+                keyboard=cancel_kb(),
+                random_id=_rand(),
+            )
             return
         ok, err = await handle_reply(api, vk_id, text)
         if ok:
@@ -579,46 +595,21 @@ def _ad_should_show(ad: dict, place: str) -> bool:
         and bool(ad.get("text", "").strip())
     )
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ИНИЦИАЛИЗАЦИИ БАЗЫ ---
 async def startup_db():
     logger.info("Инициализация базы данных...")
     try:
-        # --- ВРЕМЕННЫЙ КОД ДЛЯ ОЧИСТКИ (УДАЛИ ПОСЛЕ ОДНОГО ЗАПУСКА) ---
-        if not USE_SQLITE:
-            pool = await DatabasePool.get_pool()
-            async with pool.acquire() as conn:
-                logger.info("УДАЛЯЕМ СТАРЫЕ ТАБЛИЦЫ...")
-                await conn.execute("DROP TABLE IF EXISTS users, messages, banned, reports, blocked, ad_settings;")
-        # -----------------------------------------------------------
-
-        await init_db()
-        logger.info("✅ База данных успешно пересоздана")
-    except Exception as e:
-        logger.error(f"❌ Ошибка инициализации БД: {e}")
-
-
-# В main.py обнови функцию:
-async def startup_db():
-    logger.info("Инициализация базы данных...")
-    try:
-        if not USE_SQLITE:
-            pool = await DatabasePool.get_pool()
-            async with pool.acquire() as conn:
-                logger.info("УДАЛЯЕМ СТАРЫЕ ТАБЛИЦЫ...")
-                await conn.execute("DROP TABLE IF EXISTS users, messages, banned, reports, blocked, ad_settings;")
-
         await init_db()
         logger.info("✅ База данных успешно инициализирована")
 
-        # ЗАПУСКАЕМ ЗАДАЧИ ТОЛЬКО ТУТ:
+        # Фоновые задачи запускаем после инициализации БД
         bot.loop_wrapper.add_task(send_reminders(api))
         bot.loop_wrapper.add_task(cleanup_task())
 
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
+        raise
 
 
-# А внизу оставить только одну задачу:
 if __name__ == "__main__":
     bot.loop_wrapper.add_task(startup_db())
     bot.run_forever()

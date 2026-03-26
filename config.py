@@ -29,17 +29,24 @@ logger.info(f"Конфигурация: SHORTNAME='{VK_GROUP_SHORTNAME}', GROUP_
 
 def get_message_link(group_id: int, user_id: int = 0) -> str:
     """
-    Возвращает ссылку-анкету для пользователя user_id.
-    Если задан VK_GROUP_SHORTNAME — используем vk.me (работает на мобильных).
+    Возвращает реферальную ссылку для пользователя user_id.
+    Формат vk.me/GROUP?start=ID — единственный надёжный способ передать
+    параметр start через payload {"command":"start","hash":"ID"} в VK.
+    VK_GROUP_SHORTNAME обязателен для корректной работы реферальных ссылок.
     """
+    if not VK_GROUP_SHORTNAME:
+        logger.warning(
+            "VK_GROUP_SHORTNAME не задан! Реферальные ссылки не будут работать. "
+            "Задайте короткое имя группы в .env файле."
+        )
+        # Fallback: ссылка на группу без параметра (пользователь попадёт в чат, но ref не передастся)
+        if user_id:
+            return f"https://vk.com/club{group_id}"
+        return f"https://vk.com/club{group_id}"
+
     if user_id:
-        if VK_GROUP_SHORTNAME:
-            return f"https://vk.me/{VK_GROUP_SHORTNAME}?start={user_id}"
-        # fallback — только десктоп
-        return f"https://vk.com/im?sel=-{group_id}&text=/start%20{user_id}"
-    if VK_GROUP_SHORTNAME:
-        return f"https://vk.me/{VK_GROUP_SHORTNAME}"
-    return f"https://vk.com/club{group_id}"
+        return f"https://vk.me/{VK_GROUP_SHORTNAME}?start={user_id}"
+    return f"https://vk.me/{VK_GROUP_SHORTNAME}"
 
 
 async def get_short_link(full_url: str) -> str:

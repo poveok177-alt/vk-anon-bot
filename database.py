@@ -54,7 +54,6 @@ class DatabasePool:
 async def init_db():
     """Создаёт все таблицы при первом запуске"""
     if USE_SQLITE:
-        # SQLite fallback
         from config import DB_PATH
         with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
             c.row_factory = sqlite3.Row
@@ -63,40 +62,79 @@ async def init_db():
 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
-        # Создаём таблицы если их нет
-        # Внутри async def init_db():
-        # В таблице users
+        # Таблица пользователей
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                ...
-                created_at      TIMESTAMPTZ NOT NULL, -- Было TIMESTAMP
-                last_active     TIMESTAMPTZ NOT NULL  -- Было TIMESTAMP
+                vk_id           BIGINT PRIMARY KEY,
+                first_name      TEXT    DEFAULT '',
+                last_name       TEXT    DEFAULT '',
+                notifications   INTEGER DEFAULT 1,
+                is_banned       INTEGER DEFAULT 0,
+                msg_count       INTEGER DEFAULT 0,
+                link_clicks     INTEGER DEFAULT 0,
+                created_at      TIMESTAMPTZ NOT NULL,
+                last_active     TIMESTAMPTZ NOT NULL
             )
         """)
 
-        # В таблице messages
+        # Таблица сообщений
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
-                ...
-                created_at      TIMESTAMPTZ NOT NULL  -- Было TIMESTAMP
+                id          SERIAL PRIMARY KEY,
+                sender_id   BIGINT NOT NULL,
+                receiver_id BIGINT NOT NULL,
+                text        TEXT    NOT NULL,
+                is_replied  INTEGER DEFAULT 0,
+                is_deleted  INTEGER DEFAULT 0,
+                created_at  TIMESTAMPTZ NOT NULL
             )
         """)
 
-        # В таблице banned
+        # Таблица блокировок (один пользователь заблокировал другого)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS blocked (
+                owner_id    BIGINT NOT NULL,
+                blocked_id  BIGINT NOT NULL,
+                PRIMARY KEY (owner_id, blocked_id)
+            )
+        """)
+
+        # Таблица глобальных банов (админских)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS banned (
                 vk_id       BIGINT PRIMARY KEY,
-                banned_at   TIMESTAMPTZ NOT NULL      -- Было TIMESTAMP
+                banned_at   TIMESTAMPTZ NOT NULL
             )
         """)
 
-        # В таблице reports
+        # Таблица жалоб
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reports (
-                ...
-                created_at  TIMESTAMPTZ NOT NULL,     -- Было TIMESTAMP
+                id          SERIAL PRIMARY KEY,
+                message_id  INTEGER NOT NULL,
+                reporter_id BIGINT NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL,
                 UNIQUE(message_id, reporter_id)
             )
+        """)
+
+        # Таблица настроек рекламы
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ad_settings (
+                id       INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled  INTEGER DEFAULT 0,
+                text     TEXT    DEFAULT '',
+                url      TEXT    DEFAULT '',
+                btn_text TEXT    DEFAULT '📢 Реклама',
+                place    TEXT    DEFAULT 'AFTER_SEND'
+            )
+        """)
+
+        # Начальная вставка настроек рекламы
+        await conn.execute("""
+            INSERT INTO ad_settings (id, enabled, text, url, btn_text, place)
+            VALUES (1, 0, '', '', '📢 Реклама', 'AFTER_SEND')
+            ON CONFLICT DO NOTHING
         """)
 
         # Создаём индексы
@@ -104,7 +142,6 @@ async def init_db():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender_id)")
 
     logger.info("PostgreSQL инициализирован")
-
 
 def _init_sqlite(c):
     """Инициализация SQLite (fallback)"""

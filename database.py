@@ -735,21 +735,74 @@ async def is_ad_enabled() -> bool:
     return bool(ad.get("enabled", 0)) and has_content
 
 
+# ─── ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ (ДЛЯ TASKS И ADMIN) ──────────────────────────────
+
+async def get_inactive_users(days: int = 3) -> list[dict]:
+    """Возвращает список пользователей, которые не проявляли активность N дней."""
+    cutoff = _now_ts() - timedelta(days=days)
+
+    if USE_SQLITE:
+        def _f():
+            import sqlite3
+            from config import DB_PATH
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
+                c.row_factory = sqlite3.Row
+                # cutoff_str для сравнения в SQLite
+                cutoff_str = cutoff.isoformat()
+                rows = c.execute(
+                    "SELECT * FROM users WHERE last_active < ? AND is_banned = 0 AND notifications = 1",
+                    (cutoff_str,)
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+        return await asyncio.to_thread(_f)
+
+    pool = await DatabasePool.get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM users WHERE last_active < $1 AND is_banned = 0 AND notifications = 1",
+            cutoff
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_db_stats() -> dict:
+    """Общая статистика для админ-панели."""
+    if USE_SQLITE:
+        def _f():
+            import sqlite3
+            from config import DB_PATH
+            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
+                users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                msgs = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                banned = c.execute("SELECT COUNT(*) FROM users WHERE is_banned=1").fetchone()[0]
+                return {"users": users, "messages": msgs, "banned": banned}
+
+        return await asyncio.to_thread(_f)
+
+    pool = await DatabasePool.get_pool()
+    async with pool.acquire() as conn:
+        users = await conn.fetchval("SELECT COUNT(*) FROM users")
+        msgs = await conn.fetchval("SELECT COUNT(*) FROM messages")
+        banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = 1")
+        return {"users": users, "messages": msgs, "banned": banned}
+
+
 # ─── ЗАКРЫТИЕ ПУЛА ───────────────────────────────────────────────────────────
 
 async def close_db():
     """Закрывает пул соединений (вызывать при остановке бота)"""
-    await DatabasePool.close()
-# В конце database.py добавить:
-# ─── ДЛЯ АДМИНСКИХ ФУНКЦИЙ ───────────────────────────────────────────────────
+    if not USE_SQLITE:
+        await DatabasePool.close()
+    logger.info("Соединение с БД закрыто")
+
+
 def get_conn():
-    """Возвращает соединение с SQLite (только для админских функций)"""
+    """Вспомогательная функция для legacy-запросов (SQLite)"""
     if USE_SQLITE:
         import sqlite3
         from config import DB_PATH
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
-    else:
-        # Для PostgreSQL возвращаем None, так как админские функции переписаны
-        return None
+    return None

@@ -1,4 +1,4 @@
-vkbottle>=4.4.0
-python-dotenv==1.0.1
-aiohttp==3.9.3
-asyncpg==0.29.0
+vkbottle
+python-dotenv
+aiohttp
+asyncpg

@@ -2,4 +2,3 @@ vkbottle==4.3.5
 python-dotenv==1.0.1
 aiohttp==3.9.3
 asyncpg==0.29.0
-watchfiles==0.13.2

@@ -13,7 +13,8 @@ from database import (
     init_db, get_or_create_user, get_user, get_user_stats,
     set_notifications, get_blocked_list, unblock_user,
     block_user, get_message, get_ad, set_ad,
-    get_last_messages, mark_deleted, close_db, USE_SQLITE, DatabasePool
+    get_last_messages, mark_deleted, close_db,
+    USE_SQLITE, DatabasePool # ДОБАВЬ ЭТИ ДВА ИМПОРТА
 )
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
@@ -595,15 +596,29 @@ async def startup_db():
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
 
+
+# В main.py обнови функцию:
+async def startup_db():
+    logger.info("Инициализация базы данных...")
+    try:
+        if not USE_SQLITE:
+            pool = await DatabasePool.get_pool()
+            async with pool.acquire() as conn:
+                logger.info("УДАЛЯЕМ СТАРЫЕ ТАБЛИЦЫ...")
+                await conn.execute("DROP TABLE IF EXISTS users, messages, banned, reports, blocked, ad_settings;")
+
+        await init_db()
+        logger.info("✅ База данных успешно инициализирована")
+
+        # ЗАПУСКАЕМ ЗАДАЧИ ТОЛЬКО ТУТ:
+        bot.loop_wrapper.add_task(send_reminders(api))
+        bot.loop_wrapper.add_task(cleanup_task())
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
+
+
+# А внизу оставить только одну задачу:
 if __name__ == "__main__":
-    logger.info("✅ VK-бот запускается...")
-
-    # Добавляем инициализацию базы первой в очередь задач
     bot.loop_wrapper.add_task(startup_db())
-
-    # Твои фоновые задачи (оставляем как были)
-    bot.loop_wrapper.add_task(send_reminders(api))
-    bot.loop_wrapper.add_task(cleanup_task())
-
-    # Запуск цикла бота
     bot.run_forever()

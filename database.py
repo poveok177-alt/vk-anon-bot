@@ -178,10 +178,10 @@ def _init_sqlite(c):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 def _now_ts() -> datetime:
-    # .replace(tzinfo=None) убирает "awareness", делая объект совместимым с TIMESTAMP
+    # Обязательно добавляем .replace(tzinfo=None) для работы с PostgreSQL
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 

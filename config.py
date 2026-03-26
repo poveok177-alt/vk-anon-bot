@@ -64,53 +64,7 @@ def get_message_link(group_id: int, user_id: int = 0) -> str:
 
 
 async def get_short_link(full_url: str) -> str:
-    """
-    Сокращает ссылку через VK API utils.getShortLink.
-    При ошибке возвращает исходную ссылку.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return full_url
-
-    # Проверяем кэш
-    cached = _short_link_cache.get(full_url)
-    if cached:
-        short_url, expires_at = cached
-        if loop.time() < expires_at:
-            return short_url
-        del _short_link_cache[full_url]
-
-    params = {
-        "url": full_url,
-        "access_token": VK_TOKEN,
-        "v": VK_API_VERSION,
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.vk.com/method/utils.getShortLink",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                data = await resp.json()
-
-        if "response" in data:
-            short_url = data["response"]["short_url"]
-            _short_link_cache[full_url] = (short_url, loop.time() + _CACHE_TTL)
-            logger.debug(f"Сокращена ссылка: {full_url} -> {short_url}")
-            return short_url
-
-        error = data.get("error", {})
-        logger.warning(f"Ошибка VK API при сокращении: {error}")
-        return full_url
-
-    except asyncio.TimeoutError:
-        logger.warning(f"Таймаут при сокращении ссылки: {full_url}")
-        return full_url
-    except Exception as e:
-        logger.error(f"Исключение при сокращении ссылки: {e}")
-        return full_url
+    return full_url  # временно отключено для отладки
 
 
 BOT_LINK = get_message_link(VK_GROUP_ID, 0)

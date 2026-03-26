@@ -13,7 +13,7 @@ from database import (
     init_db, get_or_create_user, get_user, get_user_stats,
     set_notifications, get_blocked_list, unblock_user,
     block_user, get_message, get_ad, set_ad,
-    get_last_messages, mark_deleted, close_db,
+    get_last_messages, mark_deleted, close_db, USE_SQLITE, DatabasePool
 )
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
@@ -582,15 +582,18 @@ def _ad_should_show(ad: dict, place: str) -> bool:
 async def startup_db():
     logger.info("Инициализация базы данных...")
     try:
-        await init_db()  # Теперь вызываем правильно через await
-        logger.info("✅ База данных успешно инициализирована")
+        # --- ВРЕМЕННЫЙ КОД ДЛЯ ОЧИСТКИ (УДАЛИ ПОСЛЕ ОДНОГО ЗАПУСКА) ---
+        if not USE_SQLITE:
+            pool = await DatabasePool.get_pool()
+            async with pool.acquire() as conn:
+                logger.info("УДАЛЯЕМ СТАРЫЕ ТАБЛИЦЫ...")
+                await conn.execute("DROP TABLE IF EXISTS users, messages, banned, reports, blocked, ad_settings;")
+        # -----------------------------------------------------------
+
+        await init_db()
+        logger.info("✅ База данных успешно пересоздана")
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
-
-async def shutdown():
-    logger.info("Остановка бота...")
-    await close_db()
-    logger.info("Соединение с БД закрыто")
 
 if __name__ == "__main__":
     logger.info("✅ VK-бот запускается...")

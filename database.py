@@ -64,72 +64,39 @@ async def init_db():
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
         # Создаём таблицы если их нет
+        # Внутри async def init_db():
+        # В таблице users
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                vk_id           BIGINT PRIMARY KEY,
-                first_name      TEXT DEFAULT '',
-                last_name       TEXT DEFAULT '',
-                notifications   INTEGER DEFAULT 1,
-                is_banned       INTEGER DEFAULT 0,
-                msg_count       INTEGER DEFAULT 0,
-                link_clicks     INTEGER DEFAULT 0,
-                created_at      TIMESTAMP NOT NULL,
-                last_active     TIMESTAMP NOT NULL
+                ...
+                created_at      TIMESTAMPTZ NOT NULL, -- Было TIMESTAMP
+                last_active     TIMESTAMPTZ NOT NULL  -- Было TIMESTAMP
             )
         """)
 
+        # В таблице messages
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
-                id          SERIAL PRIMARY KEY,
-                sender_id   BIGINT NOT NULL,
-                receiver_id BIGINT NOT NULL,
-                text        TEXT NOT NULL,
-                is_replied  INTEGER DEFAULT 0,
-                is_deleted  INTEGER DEFAULT 0,
-                created_at  TIMESTAMP NOT NULL
+                ...
+                created_at      TIMESTAMPTZ NOT NULL  -- Было TIMESTAMP
             )
         """)
 
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS blocked (
-                owner_id    BIGINT NOT NULL,
-                blocked_id  BIGINT NOT NULL,
-                PRIMARY KEY (owner_id, blocked_id)
-            )
-        """)
-
+        # В таблице banned
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS banned (
                 vk_id       BIGINT PRIMARY KEY,
-                banned_at   TIMESTAMP NOT NULL
+                banned_at   TIMESTAMPTZ NOT NULL      -- Было TIMESTAMP
             )
         """)
 
+        # В таблице reports
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reports (
-                id          SERIAL PRIMARY KEY,
-                message_id  INTEGER NOT NULL,
-                reporter_id BIGINT NOT NULL,
-                created_at  TIMESTAMP NOT NULL,
+                ...
+                created_at  TIMESTAMPTZ NOT NULL,     -- Было TIMESTAMP
                 UNIQUE(message_id, reporter_id)
             )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ad_settings (
-                id       INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                enabled  INTEGER DEFAULT 0,
-                text     TEXT DEFAULT '',
-                url      TEXT DEFAULT '',
-                btn_text TEXT DEFAULT '📢 Реклама',
-                place    TEXT DEFAULT 'AFTER_SEND'
-            )
-        """)
-
-        # Вставляем настройки рекламы если их нет
-        await conn.execute("""
-            INSERT INTO ad_settings (id) VALUES (1)
-            ON CONFLICT (id) DO NOTHING
         """)
 
         # Создаём индексы
@@ -213,9 +180,9 @@ def _init_sqlite(c):
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-
 def _now_ts() -> datetime:
-    return datetime.now(timezone.utc)
+    # .replace(tzinfo=None) убирает "awareness", делая объект совместимым с TIMESTAMP
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ─── USERS ────────────────────────────────────────────────────────────────────
@@ -227,29 +194,24 @@ async def get_or_create_user(vk_id: int, first_name: str = "", last_name: str = 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM users WHERE vk_id = $1", vk_id)
-        if row:
-            await conn.execute("UPDATE users SET last_active = $1 WHERE vk_id = $2", _now_ts(), vk_id)
-            return dict(row)
-
         now = _now_ts()
+
+        if row:
+            await conn.execute("UPDATE users SET last_active = $1 WHERE vk_id = $2", now, vk_id)
+            res = dict(row)
+            res["last_active"] = now
+            return res
+
         await conn.execute("""
-            INSERT INTO users (vk_id, first_name, last_name, created_at, last_active)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO users (vk_id, first_name, last_name, created_at, last_active, notifications, is_banned, msg_count, link_clicks)
+            VALUES ($1, $2, $3, $4, $5, 1, 0, 0, 0)
         """, vk_id, first_name, last_name, now, now)
 
         return {
-            "vk_id": vk_id,
-            "first_name": first_name,
-            "last_name": last_name,
-            "notifications": 1,
-            "is_banned": 0,
-            "msg_count": 0,
-            "link_clicks": 0,
-            "created_at": now.isoformat(),
-            "last_active": now.isoformat()
+            "vk_id": vk_id, "first_name": first_name, "last_name": last_name,
+            "notifications": 1, "is_banned": 0, "msg_count": 0, "link_clicks": 0,
+            "created_at": now, "last_active": now
         }
-
-
 async def _sqlite_get_or_create_user(vk_id: int, first_name: str = "", last_name: str = "") -> dict:
     def _f():
         import sqlite3
@@ -399,11 +361,13 @@ async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
+        now = _now_ts()  # Используем объект datetime с UTC
         row_id = await conn.fetchval("""
-            INSERT INTO messages (sender_id, receiver_id, text, created_at)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id
-        """, sender_id, receiver_id, text, _now_ts())
+                INSERT INTO messages (sender_id, receiver_id, text, created_at)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+            """, sender_id, receiver_id, text, now)  # Передаем объект, а не строку
+
         await conn.execute("UPDATE users SET msg_count = msg_count + 1 WHERE vk_id = $1", receiver_id)
         return {"id": row_id, "sender_id": sender_id, "receiver_id": receiver_id, "text": text}
 
@@ -481,7 +445,7 @@ async def get_last_messages(vk_id: int, limit: int = 5) -> list[dict]:
 
 async def delete_old_messages(days: int = 30):
     # Добавляем timezone.utc, чтобы время было "aware"
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = _now_ts() - timedelta(days=days)
 
     if USE_SQLITE:
         def _f():

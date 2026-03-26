@@ -18,6 +18,7 @@ from keyboards import message_actions_kb
 logger = logging.getLogger(__name__)
 
 PORT = int(os.getenv("PORT", "8080"))
+VK_TOKEN = os.getenv("VK_TOKEN")
 
 # ─── HTML-шаблон ──────────────────────────────────────────────────────────────
 

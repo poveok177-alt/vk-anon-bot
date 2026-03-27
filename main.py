@@ -77,23 +77,54 @@ def _extract_ref_id(payload: dict, text: str) -> int | None:
     """
     Извлекает ID владельца ссылки из всех возможных форматов VK deep link.
 
-    Форматы, которые поддерживает VK:
-    1. payload {"command":"start","hash":"USER_ID"} — стандарт, vk.me/?start=USER_ID
-    2. text "/start USER_ID" — иногда приходит вместо payload
-    3. payload {"button":"start"} с пустым hash — не несёт ref (игнорируем)
+    Поддерживаемые форматы:
+    1. payload {"command":"start","hash":"12345"}      — стандарт для vk.me/?start=12345
+    2. payload {"command":"start","hash":"ref_12345"}  — с префиксом ref_
+    3. payload {"command":"start","hash":"u12345"}     — с префиксом u/id
+    4. text "/start 12345"                             — текстовый формат
+    5. text "12345" при command=start                  — некоторые VK-клиенты
     """
-    # Формат 1: payload {"command": "start", "hash": "USER_ID"}
-    if payload.get("command") == "start":
-        h = str(payload.get("hash", "")).strip()
-        if h.isdigit() and int(h) > 0:
-            return int(h)
+    def _parse_numeric(s: str) -> int | None:
+        """Пытается извлечь числовой ID из строки, включая префиксы."""
+        s = s.strip()
+        if not s:
+            return None
+        # Чисто цифровой ID: "12345678"
+        if s.isdigit():
+            v = int(s)
+            return v if v > 0 else None
+        # С префиксами: "ref_12345", "u12345", "id12345"
+        for prefix in ("ref_", "id", "u"):
+            if s.lower().startswith(prefix):
+                rest = s[len(prefix):]
+                if rest.isdigit():
+                    v = int(rest)
+                    return v if v > 0 else None
+        return None
 
-    # Формат 2: text "/start USER_ID"
+    # Формат 1–3: payload {"command": "start", "hash": "..."}
+    if payload.get("command") == "start":
+        raw_hash = str(payload.get("hash", "")).strip()
+        ref = _parse_numeric(raw_hash)
+        if ref:
+            logger.info(f"[extract_ref] hash='{raw_hash}' → ref={ref}")
+            return ref
+
+        # Формат 5: hash пуст, но текст сообщения содержит числовой ID
+        ref = _parse_numeric(text)
+        if ref:
+            logger.info(f"[extract_ref] hash empty, text='{text}' → ref={ref}")
+            return ref
+
+    # Формат 4: text "/start 12345"
     if text.startswith("/start "):
         part = text[7:].strip()
-        if part.isdigit() and int(part) > 0:
-            return int(part)
+        ref = _parse_numeric(part)
+        if ref:
+            logger.info(f"[extract_ref] /start text → ref={ref}")
+            return ref
 
+    logger.debug(f"[extract_ref] ref не найден: payload={payload}, text={text!r}")
     return None
 
 
@@ -142,7 +173,7 @@ async def _handle_start(message: Message, ref: int | None):
        В этом случае ref=None и мы НЕ должны сбрасывать уже установленное состояние.
     """
     vk_id = message.from_id
-    logger.info(f"[start] user={vk_id}, ref={ref}")
+    logger.info(f"[start] user={vk_id}, ref={ref} | text={message.text!r}")
 
     # Получаем имя пользователя из VK API
     try:

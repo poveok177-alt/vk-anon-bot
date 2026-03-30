@@ -1,4 +1,4 @@
-# main.py
+# main.py (полностью, с изменениями)
 """
 main.py — Точка входа VK-бота анонимных сообщений.
 """
@@ -7,8 +7,10 @@ import asyncio
 import json
 import logging
 import random
+import urllib.parse
 from vkbottle.bot import Bot, Message
 from vkbottle import API
+from vkbottle import Keyboard, KeyboardButtonColor, Text
 
 from config import VK_TOKEN, ADMIN_VK_ID, VK_GROUP_ID, get_message_link, get_short_link
 from database import (
@@ -20,7 +22,8 @@ from database import (
 )
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
-    back_to_menu_kb, settings_kb, blocks_kb, ref_choice_kb, share_command_kb,
+    back_to_menu_kb, settings_kb, blocks_kb, ref_choice_kb,
+    share_command_kb, after_send_kb,
 )
 from states import (
     set_state, clear_state, get_data, current_state,
@@ -117,22 +120,87 @@ async def get_user_link(vk_id: int) -> str:
     return await get_short_link(full_link)
 
 
+# ─── ПРАВОВЫЕ ТЕКСТЫ ─────────────────────────────────────────────────────────
+
+PRIVACY_TEXT = (
+    "🔒 <b>Политика конфиденциальности</b>\n\n"
+    "📌 <b>Какие данные мы собираем</b>\n"
+    "• VK ID – для идентификации аккаунта\n"
+    "• Текст сообщений – для их доставки\n"
+    "• Дата и время активности – для напоминаний\n\n"
+    "🛡️ <b>Зачем это нужно</b>\n"
+    "• Доставлять анонимные сообщения\n"
+    "• Защищать от спама и злоупотреблений\n"
+    "• Обрабатывать жалобы\n\n"
+    "🤝 <b>Кому мы не передаём данные</b>\n"
+    "Мы не продаём и не передаём данные третьим лицам.\n"
+    "Данные могут быть раскрыты только по официальному запросу.\n\n"
+    "🗑️ <b>Как удалить свои данные</b>\n"
+    "Напишите /issue Удалите мои данные – мы удалим запись за 72 часа.\n\n"
+    "💬 <b>Анонимность</b>\n"
+    "Ваше имя и ID скрыты от получателя.\n"
+    "Полная анонимность не гарантируется при официальном запросе.\n\n"
+    "Используя бота, вы соглашаетесь с данной политикой."
+)
+
+TERMS_TEXT = (
+    "📋 <b>Правила использования</b>\n\n"
+    "Запрещено отправлять:\n"
+    "• Оскорбления, угрозы, преследование\n"
+    "• Призывы к насилию или дискриминации\n"
+    "• Порнографию и непристойный контент\n"
+    "• Спам и массовые рассылки\n"
+    "• Чужие личные данные без согласия\n"
+    "• Контент, нарушающий законодательство\n\n"
+    "⚖️ <b>Права администрации</b>\n"
+    "• Блокировать без предупреждения\n"
+    "• Удалять сообщения\n"
+    "• Передавать данные по официальному запросу\n\n"
+    "⚠️ <b>Ограничение ответственности</b>\n"
+    "Администрация не отвечает за содержание сообщений пользователей.\n\n"
+    "По вопросам: /issue Текст обращения"
+)
+
+
 async def send_main_menu(vk_id: int, text: str | None = None):
     await get_or_create_user(vk_id)
     link = await get_user_link(vk_id)
 
     if text is None:
         text = (
-            f"🔥 Узнай, что о тебе думают на самом деле!\n\n"
-            f"📤 Твоя ссылка:\n{link}\n\n"
-            f"✉️ Друзья отправят тебе анонимку, написав:\n"
-            f"`/start {vk_id}`\n\n"
-            f"⬇️ Нажми на кнопку, чтобы скопировать команду или поделиться ссылкой!"
+            f"🔥 Твой личный ящик для секретов открыт!\n\n"
+            f"Узнай, что о тебе думают на самом деле, когда не видят твоего лица. Это место для самых честных слов, признаний и вопросов.\n\n"
+            f"📌 КАК ПОЛУЧАТЬ АНОНИМКИ:\n"
+            f"1️⃣ Поделись ссылкой и кодом ниже (в сторис или в профиле).\n"
+            f"2️⃣ Друзья перейдут в бота и введут твой код в чат.\n"
+            f"3️⃣ Ты получишь их сообщения прямо здесь!\n\n"
+            f"🔗 ТВОЯ ССЫЛКА:\n{link}\n"
+            f"🔑 ТВОЙ СЕКРЕТНЫЙ КОД:\n<code>/start {vk_id}</code>\n\n"
+            f"👇 Нажми на кнопку, чтобы поделиться с миром!"
         )
     await api.messages.send(
         user_id=vk_id,
         message=text,
         keyboard=share_command_kb(vk_id),
+        random_id=_rand(),
+        parse_mode="HTML",
+    )
+
+
+async def send_legal_menu(vk_id: int):
+    """Отправляет меню выбора правового документа."""
+    kb = (
+        Keyboard(inline=True)
+        .add(Text("📋 Правила", payload={"cmd": "terms"}), color=KeyboardButtonColor.PRIMARY)
+        .row()
+        .add(Text("🔒 Политика", payload={"cmd": "privacy"}), color=KeyboardButtonColor.PRIMARY)
+        .row()
+        .add(Text("🏠 Главное меню", payload={"cmd": "main_menu"}))
+    )
+    await api.messages.send(
+        user_id=vk_id,
+        message="⚖️ Выберите документ для ознакомления:",
+        keyboard=kb.get_json(),
         random_id=_rand(),
     )
 
@@ -236,6 +304,14 @@ async def handle_message(message: Message):
         await send_main_menu(vk_id)
         return
 
+    # ── Правовые команды ─────────────────────────────────────────────────
+    if text == "/privacy":
+        await api.messages.send(user_id=vk_id, message=PRIVACY_TEXT, random_id=_rand(), parse_mode="HTML")
+        return
+    if text == "/terms":
+        await api.messages.send(user_id=vk_id, message=TERMS_TEXT, random_id=_rand(), parse_mode="HTML")
+        return
+
     await get_or_create_user(vk_id)
 
     # ── ADMIN COMMANDS ───────────────────────────────────────────────────
@@ -329,22 +405,61 @@ async def handle_message(message: Message):
         await send_main_menu(vk_id)
         return
 
-    # ── Копирование команды ─────────────────────────────────────────────
-    if cmd == "copy_command":
-        target_id = payload.get("user_id", vk_id)
-        command_text = f"/start {target_id}"
+    # ── НОВЫЕ КНОПКИ: поделиться в сторис, на странице, скопировать текст ──
+    if cmd == "share_to_stories":
+        link = await get_user_link(vk_id)
+        command = f"/start {vk_id}"
+        story_text = (
+            f"🎭 Пиши мне всё, что думаешь! Я не узнаю, кто это. 🤐\n\n"
+            f"Заходи в бота: {link}\n"
+            f"Введи мой код в чат: {command}\n\n"
+            f"Жду твоих откровений... 👇"
+        )
+        encoded_text = urllib.parse.quote(story_text)
+        stories_url = f"https://vk.com/stories?act=create&text={encoded_text}"
         await api.messages.send(
             user_id=vk_id,
-            message=(
-                f"📋 **Скопируй эту команду:**\n\n"
-                f"`{command_text}`\n\n"
-                f"Отправь её друзьям, чтобы они могли написать тебе анонимно!\n\n"
-                f"💡 **Как использовать:**\n"
-                f"1. Скопируй команду выше\n"
-                f"2. Перешли другу в личные сообщения\n"
-                f"3. Друг отправит её в нашего бота\n"
-                f"4. Друг выберет «Отправить анонимно» и напишет тебе!"
-            ),
+            message=f"📱 Перейди по ссылке, чтобы опубликовать историю:\n{stories_url}",
+            random_id=_rand(),
+        )
+        return
+
+    if cmd == "share_to_wall":
+        link = await get_user_link(vk_id)
+        command = f"/start {vk_id}"
+        wall_text = (
+            f"📤 Хочешь сказать мне что-то анонимно?\n\n"
+            f"Сейчас — лучший момент. Я не узнаю твое имя, а ты сможешь выговориться! 🎭\n\n"
+            f"📌 ИНСТРУКЦИЯ:\n"
+            f"1️⃣ Запусти бота по ссылке: {link}\n"
+            f"2️⃣ Введи в чат мой код: {command}\n"
+            f"3️⃣ Пиши всё, что на уме.\n\n"
+            f"Жду твое сообщение... 🔥"
+        )
+        encoded_text = urllib.parse.quote(wall_text)
+        wall_url = f"https://vk.com/feed?section=post&text={encoded_text}"
+        await api.messages.send(
+            user_id=vk_id,
+            message=f"📝 Перейди по ссылке, чтобы опубликовать пост на стене:\n{wall_url}",
+            random_id=_rand(),
+        )
+        return
+
+    if cmd == "copy_text":
+        link = await get_user_link(vk_id)
+        command = f"/start {vk_id}"
+        text_to_copy = (
+            f"📤 Хочешь сказать мне что-то анонимно?\n\n"
+            f"Сейчас — лучший момент. Я не узнаю твое имя, а ты сможешь выговориться! 🎭\n\n"
+            f"📌 ИНСТРУКЦИЯ:\n"
+            f"1️⃣ Запусти бота по ссылке: {link}\n"
+            f"2️⃣ Введи в чат мой код: {command}\n"
+            f"3️⃣ Пиши всё, что на уме.\n\n"
+            f"Жду твое сообщение... 🔥"
+        )
+        await api.messages.send(
+            user_id=vk_id,
+            message=f"📋 Скопируй этот текст и отправь друзьям:\n\n{text_to_copy}",
             random_id=_rand(),
         )
         return
@@ -402,6 +517,7 @@ async def handle_message(message: Message):
         clear_state(vk_id)
         if ok:
             sender_link = await get_user_link(vk_id)
+            sender_command = f"/start {vk_id}"
             ad = await get_ad()
             ad_block = ""
             if _ad_should_show(ad, "AFTER_SEND"):
@@ -409,14 +525,21 @@ async def handle_message(message: Message):
             await api.messages.send(
                 user_id=vk_id,
                 message=(
-                    f"✅ Сообщение отправлено, ожидайте ответ!\n\n"
-                    f"💌 Начните получать анонимные сообщения прямо сейчас!\n\n"
-                    f"👉 {sender_link}\n\n"
-                    f"Разместите эту ссылку ☝️ к себе на страницу, чтобы вам могли написать 💬"
+                    f"✅ Сообщение улетело анонимно!\n"
+                    f"Теперь жди ответ... 😈\n\n"
+                    f"🎭 Хочешь тоже получать анонимные сообщения?\n"
+                    f"Узнай, что люди скрывают от тебя. Это бесплатно, честно и полностью анонимно.\n\n"
+                    f"📌 ТВОЯ ИНСТРУКЦИЯ:\n"
+                    f"1️⃣ Скопируй свою ссылку и код ниже.\n"
+                    f"2️⃣ Размести их в сторис или в профиле.\n"
+                    f"3️⃣ Получай сообщения, о которых ты даже не догадывался!\n\n"
+                    f"🔗 ТВОЯ ССЫЛКА:\n{sender_link}\n"
+                    f"🔑 ТВОЙ КОД:\n<code>{sender_command}</code>\n"
                     f"{ad_block}"
                 ),
-                keyboard=back_to_menu_kb(),
+                keyboard=after_send_kb(vk_id),
                 random_id=_rand(),
+                parse_mode="HTML",
             )
         else:
             await api.messages.send(
@@ -451,6 +574,7 @@ async def handle_message(message: Message):
                 message=f"✅ Ответ отправлен анонимно!{ad_block}",
                 keyboard=back_to_menu_kb(),
                 random_id=_rand(),
+                parse_mode="HTML",
             )
         else:
             await api.messages.send(
@@ -464,13 +588,18 @@ async def handle_message(message: Message):
     # ── КНОПКИ (payload) ─────────────────────────────────────────────────
     if cmd == "my_link":
         link = await get_user_link(vk_id)
+        command = f"/start {vk_id}"
+        template = (
+            f"🤳 Твой магнит для признаний готов!\n\n"
+            f"Скопируй этот текст и закинь в сторис или друзьям в личку:\n\n"
+            f"«Хочешь сказать мне правду в лицо, но боишься? 🎭 Напиши мне анонимно!\n\n"
+            f"Зайди в бота: {link}\n"
+            f"Введи мой код в чат: {command}\n\n"
+            f"Пиши всё, что хочешь!»"
+        )
         await api.messages.send(
             user_id=vk_id,
-            message=(
-                f"💌 Начните получать анонимные сообщения прямо сейчас!\n\n"
-                f"👉 {link}\n\n"
-                f"Разместите эту ссылку ☝️ к себе на страницу, чтобы вам могли написать 💬"
-            ),
+            message=template,
             keyboard=back_to_menu_kb(),
             random_id=_rand(),
         )
@@ -486,7 +615,7 @@ async def handle_message(message: Message):
                 random_id=_rand(),
             )
         else:
-            text_out = "💬 Последние анонимные сообщения:\n\n"
+            text_out = "💬 <b>Последние анонимные сообщения:</b>\n\n"
             for m in msgs:
                 mark = "✅" if m.get("is_replied") else "🔹"
                 short = m["text"][:40] + ("…" if len(m["text"]) > 40 else "")
@@ -496,6 +625,7 @@ async def handle_message(message: Message):
                 message=text_out,
                 keyboard=back_to_menu_kb(),
                 random_id=_rand(),
+                parse_mode="HTML",
             )
         return
 
@@ -505,7 +635,7 @@ async def handle_message(message: Message):
         await api.messages.send(
             user_id=vk_id,
             message=(
-                f"📊 Твоя статистика\n\n"
+                f"📊 <b>Твоя статистика</b>\n\n"
                 f"💌 Получено анонимок: {stats['incoming']}\n"
                 f"📤 Отправлено: {stats['outgoing']}\n"
                 f"✅ Ответил: {stats['replied']}\n\n"
@@ -513,6 +643,7 @@ async def handle_message(message: Message):
             ),
             keyboard=back_to_menu_kb(),
             random_id=_rand(),
+            parse_mode="HTML",
         )
         return
 
@@ -648,6 +779,17 @@ async def handle_message(message: Message):
             keyboard=back_to_menu_kb(),
             random_id=_rand(),
         )
+        return
+
+    # ── Правовые кнопки ─────────────────────────────────────────────────
+    if cmd == "legal":
+        await send_legal_menu(vk_id)
+        return
+    if cmd == "privacy":
+        await api.messages.send(user_id=vk_id, message=PRIVACY_TEXT, random_id=_rand(), parse_mode="HTML")
+        return
+    if cmd == "terms":
+        await api.messages.send(user_id=vk_id, message=TERMS_TEXT, random_id=_rand(), parse_mode="HTML")
         return
 
     # ── ADMIN CALLBACKS ──────────────────────────────────────────────────

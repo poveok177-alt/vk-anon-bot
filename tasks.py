@@ -1,3 +1,4 @@
+# tasks.py
 """
 tasks.py — Фоновые задачи:
   1. send_reminders() — каждые 6 часов напоминает неактивным
@@ -14,6 +15,7 @@ from database import (
     get_inactive_users, update_last_active,
     set_notifications, delete_old_messages,
 )
+from keyboards import share_command_kb  # добавим клавиатуру
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +42,19 @@ async def send_reminders(api: API):
                 full_link = get_message_link(VK_GROUP_ID, uid)
                 short_link = await get_short_link(full_link)
                 try:
+                    # Отправляем напоминание с клавиатурой share_command_kb
                     await api.messages.send(
                         user_id=uid,
                         message=(
-                            f"🤫 Тишина уже {INACTIVE_DAYS} дня...\n\n"
-                            f"Может, напомнишь о себе? Поделись ссылкой — и получай анонимные сообщения!\n\n"
-                            f"🔗 {short_link}"
+                            f"🤫 Тишина... Кажется, о тебе начали забывать.\n\n"
+                            f"А ведь кто-то прямо сейчас может хранить секрет, связанный с тобой. Напомни друзьям, где тебе можно высказаться!\n\n"
+                            f"🔗 Ссылка: {short_link}\n"
+                            f"🔑 Твой код: <code>/start {uid}</code>\n\n"
+                            f"Выложи ссылку в сторис — проверь, кто из друзей самый смелый сегодня! 🔥"
                         ),
-                        random_id=_rand(),  # Исправлено: был random_id=0
+                        keyboard=share_command_kb(uid),  # та же клавиатура, что в главном меню
+                        random_id=_rand(),
+                        parse_mode="HTML",
                     )
                     await update_last_active(uid)
                     await asyncio.sleep(0.05)

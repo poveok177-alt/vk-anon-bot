@@ -1,3 +1,4 @@
+# keyboards.py
 """
 keyboards.py — Клавиатуры для VK-бота.
 """
@@ -102,11 +103,33 @@ def mod_actions_kb(msg_id: int, sender_id: int) -> str:
 
 
 def share_command_kb(vk_id: int) -> str:
+    """Клавиатура для главного меню с тремя кнопками (сторис, стена, правила)."""
     kb = (
         Keyboard(inline=True)
-        .add(Text("📋 Скопировать команду", payload={"cmd": "copy_command", "user_id": vk_id}), color=KeyboardButtonColor.PRIMARY)
+        .add(Text("📱 Поделиться в сторис", payload={"cmd": "share_to_stories", "user_id": vk_id}), color=KeyboardButtonColor.PRIMARY)
         .row()
-        .add(Text("📤 Поделиться ссылкой", payload={"cmd": "my_link"}))
+        .add(Text("📝 Поделиться на странице", payload={"cmd": "share_to_wall", "user_id": vk_id}), color=KeyboardButtonColor.PRIMARY)
+        .row()
+        .add(Text("📋 Скопировать текст", payload={"cmd": "copy_text", "user_id": vk_id}), color=KeyboardButtonColor.PRIMARY)
+        .row()
+        .add(Text("⚖️ Правила", payload={"cmd": "legal"}), color=KeyboardButtonColor.SECONDARY)
+    )
+    return kb.get_json()
+
+
+def after_send_kb(vk_id: int) -> str:
+    """Клавиатура после отправки сообщения (те же кнопки, что и в главном меню)."""
+    kb = (
+        Keyboard(inline=True)
+        .add(Text("🏠 Главное меню", payload={"cmd": "main_menu"}))
+        .row()
+        .add(Text("📱 Поделиться в сторис", payload={"cmd": "share_to_stories", "user_id": vk_id}))
+        .row()
+        .add(Text("📝 Поделиться на странице", payload={"cmd": "share_to_wall", "user_id": vk_id}))
+        .row()
+        .add(Text("📋 Скопировать текст", payload={"cmd": "copy_text", "user_id": vk_id}))
+        .row()
+        .add(Text("⚖️ Правила", payload={"cmd": "legal"}))
     )
     return kb.get_json()
 

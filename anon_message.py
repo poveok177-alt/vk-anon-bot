@@ -68,13 +68,15 @@ async def send_anon_message(api: API, sender_id: int, target_id: int, text: str)
         await api.messages.send(
             user_id=target_id,
             message=(
-                f"💌 Тебе пришло анонимное сообщение!\n\n"
-                f"{text}\n\n"
-                f"↩️ Нажми «Ответить», чтобы ответить анонимно."
+                f"💌 <b>Тайное послание!</b>\n\n"
+                f"«{text}»\n\n"
+                f"✏️ Нажми «Ответить», чтобы ответить анонимно.\n"
+                f"Кто-то очень хотел тебе это сказать…"
                 f"{ad_text}"
             ),
             keyboard=message_actions_kb(msg_id),
             random_id=_rand(),
+            parse_mode="HTML",
         )
     except Exception as e:
         logger.error(f"[send_anon_message] send to {target_id}: {e}")
@@ -129,12 +131,14 @@ async def handle_reply(api: API, sender_id: int, text: str):
         await api.messages.send(
             user_id=target_id,
             message=(
-                f"↩️ Тебе ответили анонимно!\n\n"
-                f"{text}\n\n"
-                f"Нажми «Ответить», чтобы продолжить диалог."
+                f"↩️ <b>Тебе ответили!</b>\n\n"
+                f"«{text}»\n\n"
+                f"Нажми «Ответить», чтобы продолжить диалог.\n"
+                f"Переписка останется полностью анонимной."
             ),
             keyboard=message_actions_kb(saved["id"]),
             random_id=_rand(),
+            parse_mode="HTML",
         )
     except Exception as e:
         logger.error(f"[handle_reply] send to {target_id}: {e}")

@@ -296,10 +296,6 @@ async def handle_message(message: Message):
         await _handle_start(message, ref=ref_id)
         return
 
-    if text == "/start":
-        await _handle_start(message, ref=None)
-        return
-
     if text in ("/menu", "/help"):
         await send_main_menu(vk_id)
         return
@@ -739,6 +735,14 @@ async def handle_message(message: Message):
                 random_id=_rand(),
             )
             return
+        if original["sender_id"] == 0:
+            await api.messages.send(
+                user_id=vk_id,
+                message="↩️ Это сообщение пришло с сайта — ответить на него нельзя.",
+                keyboard=back_to_menu_kb(),
+                random_id=_rand(),
+            )
+            return
         set_state(vk_id, STATE_WAITING_REPLY, target_id=original["sender_id"], msg_id=msg_id)
         await api.messages.send(
             user_id=vk_id,
@@ -771,6 +775,14 @@ async def handle_message(message: Message):
             return
         if msg["receiver_id"] != vk_id:
             await api.messages.send(user_id=vk_id, message="⛔ Это не ваше сообщение.", random_id=_rand())
+            return
+        if msg["sender_id"] == 0:
+            await api.messages.send(
+                user_id=vk_id,
+                message="🚫 Нельзя заблокировать анонима, написавшего с сайта.",
+                keyboard=back_to_menu_kb(),
+                random_id=_rand(),
+            )
             return
         await block_user(vk_id, msg["sender_id"])
         await api.messages.send(

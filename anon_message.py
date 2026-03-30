@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 REPORT_THRESHOLD_DELETE = 5
 
+# Зарезервированный ID для анонимных отправителей с веб-формы
+WEB_SENDER_ID = 0
+
 
 def _rand() -> int:
     return random.randint(1, 2_147_483_647)
@@ -109,6 +112,11 @@ async def handle_reply(api: API, sender_id: int, text: str):
         clear_state(sender_id)
         return False, "⚠️ Ошибка. Попробуй нажать «Ответить» заново."
 
+    # Нельзя ответить анониму с веб-формы — у него нет аккаунта VK
+    if target_id == WEB_SENDER_ID:
+        clear_state(sender_id)
+        return False, "↩️ Это сообщение пришло с сайта — ответить на него нельзя."
+
     original = await get_message(msg_id)
     if not original:
         clear_state(sender_id)
@@ -168,7 +176,7 @@ async def handle_report(api: API, reporter_id: int, msg_id: int) -> str:
             message=(
                 f"⚠️ Жалоба #{count} на сообщение\n"
                 f"ID сообщения: {msg_id}\n"
-                f"Отправитель: {sender_id}\n"
+                f"Отправитель: {'веб-форма' if sender_id == WEB_SENDER_ID else sender_id}\n"
                 f"Текст: {text}"
             ),
             keyboard=mod_actions_kb(msg_id, sender_id),

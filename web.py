@@ -10,6 +10,7 @@ web.py — Веб-сервер для приёма анонимных сообщ
 import os
 import random
 import logging
+import html
 from aiohttp import web
 
 from database import get_user, save_message
@@ -169,7 +170,7 @@ async def handle_get(request: web.Request) -> web.Response:
     if not user or user.get("is_banned"):
         return _render(UNAVAILABLE_BODY)
 
-    name = (user.get("first_name") or "").strip() or "пользователю"
+    name = html.escape((user.get("first_name") or "").strip() or "пользователю")
     body = FORM_BODY.format(name=name, prefill="", chars=0, error="", disabled="")
     return _render(body)
 
@@ -184,7 +185,7 @@ async def handle_post(request: web.Request) -> web.Response:
     if not user or user.get("is_banned"):
         return _render(UNAVAILABLE_BODY)
 
-    name = (user.get("first_name") or "").strip() or "пользователю"
+    name = html.escape((user.get("first_name") or "").strip() or "пользователю")
 
     data = await request.post()
     text = (data.get("text") or "").strip()
@@ -199,8 +200,11 @@ async def handle_post(request: web.Request) -> web.Response:
         return _render(body)
 
     if len(text) > 4000:
+        # Экранируем пользовательский ввод перед подстановкой в HTML
         body = FORM_BODY.format(
-            name=name, prefill=text[:4000], chars=4000,
+            name=name,
+            prefill=html.escape(text[:4000]),
+            chars=4000,
             error='<p class="error-msg">⚠️ Слишком длинное (максимум 4000 символов)</p>',
             disabled="",
         )

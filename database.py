@@ -219,6 +219,7 @@ def _now() -> str:
     """Возвращает строку с текущим временем UTC без часового пояса (для SQLite)."""
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
+
 def _now_ts() -> datetime:
     """Возвращает aware datetime с UTC (для PostgreSQL)."""
     return datetime.now(timezone.utc)
@@ -240,9 +241,20 @@ async def get_or_create_user(vk_id: int, first_name: str = "", last_name: str = 
         now = _now_ts()
 
         if row:
-            await conn.execute("UPDATE users SET last_active = $1 WHERE vk_id = $2", now, vk_id)
+            # Обновляем last_active и имя/фамилию, если были переданы новые данные
+            if first_name or last_name:
+                await conn.execute(
+                    "UPDATE users SET last_active = $1, first_name = $2, last_name = $3 WHERE vk_id = $4",
+                    now, first_name or row["first_name"], last_name or row["last_name"], vk_id
+                )
+            else:
+                await conn.execute("UPDATE users SET last_active = $1 WHERE vk_id = $2", now, vk_id)
             res = dict(row)
             res["last_active"] = now
+            if first_name:
+                res["first_name"] = first_name
+            if last_name:
+                res["last_name"] = last_name
             return res
 
         await conn.execute("""
@@ -262,8 +274,20 @@ async def _sqlite_get_or_create_user(vk_id: int, first_name: str = "", last_name
             c.row_factory = sqlite3.Row
             row = c.execute("SELECT * FROM users WHERE vk_id=?", (vk_id,)).fetchone()
             if row:
-                c.execute("UPDATE users SET last_active=? WHERE vk_id=?", (_now(), vk_id))
-                return dict(row)
+                row_dict = dict(row)
+                # Обновляем last_active и имя/фамилию, если были переданы новые данные
+                if first_name or last_name:
+                    new_fn = first_name or row_dict["first_name"]
+                    new_ln = last_name or row_dict["last_name"]
+                    c.execute(
+                        "UPDATE users SET last_active=?, first_name=?, last_name=? WHERE vk_id=?",
+                        (_now(), new_fn, new_ln, vk_id)
+                    )
+                    row_dict["first_name"] = new_fn
+                    row_dict["last_name"] = new_ln
+                else:
+                    c.execute("UPDATE users SET last_active=? WHERE vk_id=?", (_now(), vk_id))
+                return row_dict
             now = _now()
             c.execute(
                 "INSERT INTO users (vk_id,first_name,last_name,created_at,last_active) VALUES (?,?,?,?,?)",
@@ -464,11 +488,8 @@ async def get_last_messages(vk_id: int, limit: int = 5) -> list[dict]:
 
 
 async def delete_old_messages(days: int = 30):
-    cutoff_aware = _now_ts() - timedelta(days=days)
-
     if USE_SQLITE:
-        cutoff_naive = _now_utc_naive() - timedelta(days=days)
-        cutoff_str = cutoff_naive.isoformat()
+        cutoff_str = (_now_utc_naive() - timedelta(days=days)).isoformat()
         def _f():
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 cur = c.execute("DELETE FROM messages WHERE created_at < ? AND is_deleted = 1", (cutoff_str,))
@@ -477,6 +498,7 @@ async def delete_old_messages(days: int = 30):
         logger.info(f"[DB] Удалено старых сообщений: {deleted}")
         return
 
+    cutoff_aware = _now_ts() - timedelta(days=days)
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM messages WHERE created_at < $1 AND is_deleted = 1", cutoff_aware)
@@ -700,11 +722,8 @@ async def is_ad_enabled() -> bool:
 
 async def get_inactive_users(days: int = 3) -> list[dict]:
     """Возвращает список пользователей, которые не проявляли активность N дней."""
-    cutoff_aware = _now_ts() - timedelta(days=days)
-
     if USE_SQLITE:
-        cutoff_naive = _now_utc_naive() - timedelta(days=days)
-        cutoff_str = cutoff_naive.isoformat()
+        cutoff_str = (_now_utc_naive() - timedelta(days=days)).isoformat()
         def _f():
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.row_factory = sqlite3.Row
@@ -715,6 +734,7 @@ async def get_inactive_users(days: int = 3) -> list[dict]:
                 return [dict(r) for r in rows]
         return await asyncio.to_thread(_f)
 
+    cutoff_aware = _now_ts() - timedelta(days=days)
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(

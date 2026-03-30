@@ -23,11 +23,12 @@ VK_GROUP_SHORT_NAME = os.getenv("VK_GROUP_SHORT_NAME", "")
 DB_PATH = os.getenv("DB_PATH", "./data/bot.db")
 
 # Создаём папку для базы данных, если её нет (чтобы избежать ошибок при записи)
-if not os.path.exists(os.path.dirname(DB_PATH)):
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:  # пропускаем, если dirname пустой (файл в текущей директории)
     try:
-        os.makedirs(os.path.dirname(DB_PATH))
-    except Exception:
-        pass  # если не удалось — ошибка будет позже при подключении
+        os.makedirs(_db_dir, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"Не удалось создать папку для БД '{_db_dir}': {e}")
 
 # ─── Формирование deep link ────────────────────────────────────────────────────
 

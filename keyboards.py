@@ -6,7 +6,7 @@ keyboards.py — Клавиатуры для VK-бота.
 from vkbottle import Keyboard, KeyboardButtonColor, Text, OpenLink, Callback
 
 
-def main_menu_kb(vk_id: int, link: str) -> str:
+def main_menu_kb() -> str:
     kb = (
         Keyboard(inline=True)
         .add(Text("📤 Поделиться ссылкой", payload={"cmd": "my_link"}), color=KeyboardButtonColor.PRIMARY)

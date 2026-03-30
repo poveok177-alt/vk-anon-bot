@@ -115,3 +115,15 @@ def mod_actions_kb(msg_id: int, sender_id: int) -> str:
         .add(Text("✅ Игнор", payload={"cmd": "mod_ignore", "msg_id": msg_id}), color=KeyboardButtonColor.POSITIVE)
     )
     return kb.get_json()
+# keyboards.py — добавьте в конец файла
+
+def ref_choice_kb(target_id: int) -> str:
+    """Клавиатура для выбора действия после перехода по реферальной ссылке."""
+    kb = (
+        Keyboard(inline=True)
+        .add(Text("✉️ Отправить анонимно", payload={"cmd": "send_to_ref", "target_id": target_id}),
+             color=KeyboardButtonColor.PRIMARY)
+        .row()
+        .add(Text("📤 Начать получать", payload={"cmd": "main_menu"}))
+    )
+    return kb.get_json()

@@ -1,3 +1,4 @@
+# main.py
 """
 main.py — Точка входа VK-бота анонимных сообщений.
 """
@@ -19,7 +20,7 @@ from database import (
 )
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
-    back_to_menu_kb, settings_kb, blocks_kb,
+    back_to_menu_kb, settings_kb, blocks_kb, ref_choice_kb,  # добавлено
 )
 from states import (
     set_state, clear_state, get_data, current_state,
@@ -220,11 +221,7 @@ async def _handle_start(message: Message, ref: int | None):
 
     # Если есть реферал — предлагаем написать анонимку
     if ref and ref != vk_id:
-        # Пробуем получить пользователя из БД
         target = await get_user(ref)
-
-        # Если target не найден в БД — возможно, он ещё не запускал бота.
-        # Пробуем его создать (pre-registration), чтобы не терять отправителей.
         if not target:
             logger.info(f"[start] ref={ref} не найден в БД, пробуем получить из VK API")
             try:
@@ -237,17 +234,14 @@ async def _handle_start(message: Message, ref: int | None):
                 target = None
 
         if target and not target.get("is_banned"):
-            set_state(vk_id, STATE_WAITING_MESSAGE, target_id=ref)
-            # Получаем имя получателя для отображения
-            t_name = target.get("first_name", "") or ""
-            greeting = f"✉️ Написать анонимное сообщение{f' для {t_name}' if t_name else ''}\n\n"
+            # Показываем меню выбора: отправить или начать получать
             await api.messages.send(
                 user_id=vk_id,
                 message=(
-                    f"{greeting}"
-                    f"Получатель не узнает, кто ты. Просто напиши сообщение 👇"
+                    f"👋 Привет! Ты перешёл по ссылке пользователя {target.get('first_name', '')}.\n\n"
+                    f"Выбери действие:"
                 ),
-                keyboard=cancel_kb(),
+                keyboard=ref_choice_kb(ref),
                 random_id=_rand(),
             )
             return
@@ -271,27 +265,25 @@ def _ad_should_show(ad: dict, place: str) -> bool:
 
 # ─── ЕДИНЫЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ ────────────────────────────────────────
 
+# main.py — полная функция handle_message
+
 @bot.on.message()
 async def handle_message(message: Message):
     vk_id = message.from_id
     text = (message.text or "").strip()
 
-    # Надёжный парсинг payload (никогда не падает)
     payload = _parse_payload(message)
     cmd = payload.get("cmd", "")
 
     logger.debug(f"[msg] user={vk_id}, text={text!r}, payload={payload}, cmd={cmd!r}")
 
     # ── Deep link / кнопка «Начать» ──────────────────────────────────────
-    # Обрабатываем ВСЕ старт-события через единую точку входа _handle_start.
-    # _extract_ref_id вернёт None если hash отсутствует или не является числом.
     if _is_start_event(payload, text):
         ref_id = _extract_ref_id(payload, text)
         logger.info(f"[start-event] user={vk_id}, ref_id={ref_id}, payload={payload}")
         await _handle_start(message, ref=ref_id)
         return
 
-    # ── Команды /start (текстовые, на случай Telegram-привычек) ─────────
     if text == "/start":
         await _handle_start(message, ref=None)
         return
@@ -391,6 +383,34 @@ async def handle_message(message: Message):
     if cmd == "main_menu" or text in ("🏠 Главное меню", "❌ Отмена"):
         clear_state(vk_id)
         await send_main_menu(vk_id)
+        return
+
+    # ── Обработка выбора действия после перехода по ссылке ───────────────
+    if cmd == "send_to_ref":
+        target_id = payload.get("target_id")
+        if not target_id:
+            return
+        target = await get_user(target_id)
+        if not target or target.get("is_banned"):
+            await api.messages.send(
+                user_id=vk_id,
+                message="⚠️ Пользователь, которому вы хотите написать, недоступен.",
+                keyboard=back_to_menu_kb(),
+                random_id=_rand(),
+            )
+            return
+        set_state(vk_id, STATE_WAITING_MESSAGE, target_id=target_id)
+        t_name = target.get("first_name", "") or ""
+        greeting = f"✉️ Написать анонимное сообщение{f' для {t_name}' if t_name else ''}\n\n"
+        await api.messages.send(
+            user_id=vk_id,
+            message=(
+                f"{greeting}"
+                f"Получатель не узнает, кто ты. Просто напиши сообщение 👇"
+            ),
+            keyboard=cancel_kb(),
+            random_id=_rand(),
+        )
         return
 
     state = current_state(vk_id)

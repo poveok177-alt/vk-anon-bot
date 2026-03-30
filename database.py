@@ -1,3 +1,4 @@
+# database.py
 """
 database.py — PostgreSQL база данных для VK-бота анонимок.
 
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL", os.getenv("POSTGRES_URL", ""))
 if not DATABASE_URL:
     logger.warning("DATABASE_URL не задан! Будет использован SQLite fallback")
-    # Здесь можно оставить SQLite как fallback или выдать ошибку
     USE_SQLITE = True
 else:
     USE_SQLITE = False
@@ -216,10 +216,15 @@ def _init_sqlite(c):
 
 
 def _now() -> str:
+    """Возвращает строку с текущим временем UTC без часового пояса (для SQLite)."""
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 def _now_ts() -> datetime:
-    # Обязательно добавляем .replace(tzinfo=None) для работы с PostgreSQL
+    """Возвращает aware datetime с UTC (для PostgreSQL)."""
+    return datetime.now(timezone.utc)
+
+def _now_utc_naive() -> datetime:
+    """Возвращает naive datetime UTC (для вычислений в SQLite)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -250,10 +255,9 @@ async def get_or_create_user(vk_id: int, first_name: str = "", last_name: str = 
             "notifications": 1, "is_banned": 0, "msg_count": 0, "link_clicks": 0,
             "created_at": now, "last_active": now
         }
+
 async def _sqlite_get_or_create_user(vk_id: int, first_name: str = "", last_name: str = "") -> dict:
     def _f():
-        import sqlite3
-        from config import DB_PATH
         with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
             c.row_factory = sqlite3.Row
             row = c.execute("SELECT * FROM users WHERE vk_id=?", (vk_id,)).fetchone()
@@ -283,8 +287,6 @@ async def get_user(vk_id: int) -> dict | None:
 
 async def _sqlite_get_user(vk_id: int) -> dict | None:
     def _f():
-        import sqlite3
-        from config import DB_PATH
         with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
             c.row_factory = sqlite3.Row
             row = c.execute("SELECT * FROM users WHERE vk_id=?", (vk_id,)).fetchone()
@@ -295,8 +297,6 @@ async def _sqlite_get_user(vk_id: int) -> dict | None:
 async def update_last_active(vk_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute("UPDATE users SET last_active=? WHERE vk_id=?", (_now(), vk_id))
         await asyncio.to_thread(_f)
@@ -310,8 +310,6 @@ async def update_last_active(vk_id: int):
 async def set_notifications(vk_id: int, val: bool):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute("UPDATE users SET notifications=? WHERE vk_id=?", (int(val), vk_id))
         await asyncio.to_thread(_f)
@@ -325,8 +323,6 @@ async def set_notifications(vk_id: int, val: bool):
 async def get_total_users() -> int:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 return c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         return await asyncio.to_thread(_f)
@@ -339,8 +335,6 @@ async def get_total_users() -> int:
 async def get_all_users_for_broadcast() -> list[int]:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 rows = c.execute(
                     "SELECT vk_id FROM users WHERE is_banned=0 AND notifications=1"
@@ -357,8 +351,6 @@ async def get_all_users_for_broadcast() -> list[int]:
 async def get_user_stats(vk_id: int) -> dict:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 incoming = c.execute(
                     "SELECT COUNT(*) FROM messages WHERE receiver_id=?", (vk_id,)
@@ -385,8 +377,6 @@ async def get_user_stats(vk_id: int) -> dict:
 async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 cur = c.execute(
                     "INSERT INTO messages (sender_id,receiver_id,text,created_at) VALUES (?,?,?,?)",
@@ -399,12 +389,12 @@ async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
-        now = _now_ts()  # Используем объект datetime с UTC
+        now = _now_ts()
         row_id = await conn.fetchval("""
                 INSERT INTO messages (sender_id, receiver_id, text, created_at)
                 VALUES ($1, $2, $3, $4)
                 RETURNING id
-            """, sender_id, receiver_id, text, now)  # Передаем объект, а не строку
+            """, sender_id, receiver_id, text, now)
 
         await conn.execute("UPDATE users SET msg_count = msg_count + 1 WHERE vk_id = $1", receiver_id)
         return {"id": row_id, "sender_id": sender_id, "receiver_id": receiver_id, "text": text}
@@ -413,8 +403,6 @@ async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
 async def get_message(msg_id: int) -> dict | None:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.row_factory = sqlite3.Row
                 row = c.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
@@ -430,8 +418,6 @@ async def get_message(msg_id: int) -> dict | None:
 async def mark_replied(msg_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute("UPDATE messages SET is_replied=1 WHERE id=?", (msg_id,))
         await asyncio.to_thread(_f)
@@ -445,8 +431,6 @@ async def mark_replied(msg_id: int):
 async def mark_deleted(msg_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute("UPDATE messages SET is_deleted=1 WHERE id=?", (msg_id,))
         await asyncio.to_thread(_f)
@@ -460,8 +444,6 @@ async def mark_deleted(msg_id: int):
 async def get_last_messages(vk_id: int, limit: int = 5) -> list[dict]:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.row_factory = sqlite3.Row
                 rows = c.execute(
@@ -482,26 +464,22 @@ async def get_last_messages(vk_id: int, limit: int = 5) -> list[dict]:
 
 
 async def delete_old_messages(days: int = 30):
-    # Добавляем timezone.utc, чтобы время было "aware"
-    cutoff = _now_ts() - timedelta(days=days)
+    cutoff_aware = _now_ts() - timedelta(days=days)
 
     if USE_SQLITE:
+        cutoff_naive = _now_utc_naive() - timedelta(days=days)
+        cutoff_str = cutoff_naive.isoformat()
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                # Для SQLite используем isoformat
-                cur = c.execute("DELETE FROM messages WHERE created_at < ? AND is_deleted = 1", (cutoff.isoformat(),))
+                cur = c.execute("DELETE FROM messages WHERE created_at < ? AND is_deleted = 1", (cutoff_str,))
                 return cur.rowcount
-
         deleted = await asyncio.to_thread(_f)
         logger.info(f"[DB] Удалено старых сообщений: {deleted}")
         return
 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
-        # Для PostgreSQL asyncpg сам поймет объект cutoff с таймзоной
-        result = await conn.execute("DELETE FROM messages WHERE created_at < $1 AND is_deleted = 1", cutoff)
+        result = await conn.execute("DELETE FROM messages WHERE created_at < $1 AND is_deleted = 1", cutoff_aware)
         logger.info(f"[DB] Очистка завершена: {result}")
 
 # ─── BLOCKED ──────────────────────────────────────────────────────────────────
@@ -509,8 +487,6 @@ async def delete_old_messages(days: int = 30):
 async def block_user(owner_id: int, blocked_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute(
                     "INSERT OR IGNORE INTO blocked (owner_id, blocked_id) VALUES (?,?)",
@@ -531,8 +507,6 @@ async def block_user(owner_id: int, blocked_id: int):
 async def unblock_user(owner_id: int, blocked_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute(
                     "DELETE FROM blocked WHERE owner_id=? AND blocked_id=?",
@@ -549,8 +523,6 @@ async def unblock_user(owner_id: int, blocked_id: int):
 async def is_blocked(owner_id: int, sender_id: int) -> bool:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 row = c.execute(
                     "SELECT 1 FROM blocked WHERE owner_id=? AND blocked_id=?",
@@ -568,8 +540,6 @@ async def is_blocked(owner_id: int, sender_id: int) -> bool:
 async def get_blocked_list(owner_id: int) -> list[dict]:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.row_factory = sqlite3.Row
                 rows = c.execute(
@@ -589,8 +559,6 @@ async def get_blocked_list(owner_id: int) -> list[dict]:
 async def ban_user(vk_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute(
                     "INSERT OR IGNORE INTO banned (vk_id, banned_at) VALUES (?,?)",
@@ -613,8 +581,6 @@ async def ban_user(vk_id: int):
 async def unban_user(vk_id: int):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.execute("DELETE FROM banned WHERE vk_id=?", (vk_id,))
                 c.execute("UPDATE users SET is_banned=0 WHERE vk_id=?", (vk_id,))
@@ -630,8 +596,6 @@ async def unban_user(vk_id: int):
 async def is_banned(vk_id: int) -> bool:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 row = c.execute("SELECT 1 FROM banned WHERE vk_id=?", (vk_id,)).fetchone()
                 return row is not None
@@ -648,8 +612,6 @@ async def is_banned(vk_id: int) -> bool:
 async def add_report(reporter_id: int, msg_id: int) -> int:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 try:
                     c.execute(
@@ -680,8 +642,6 @@ async def add_report(reporter_id: int, msg_id: int) -> int:
 async def has_reported(reporter_id: int, msg_id: int) -> bool:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 row = c.execute(
                     "SELECT 1 FROM reports WHERE message_id=? AND reporter_id=?",
@@ -701,8 +661,6 @@ async def has_reported(reporter_id: int, msg_id: int) -> bool:
 async def get_ad() -> dict:
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.row_factory = sqlite3.Row
                 row = c.execute("SELECT * FROM ad_settings WHERE id=1").fetchone()
@@ -718,8 +676,6 @@ async def get_ad() -> dict:
 async def set_ad(**kwargs):
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             sets = ", ".join(f"{k}=?" for k in kwargs)
             vals = list(kwargs.values())
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
@@ -744,29 +700,26 @@ async def is_ad_enabled() -> bool:
 
 async def get_inactive_users(days: int = 3) -> list[dict]:
     """Возвращает список пользователей, которые не проявляли активность N дней."""
-    cutoff = _now_ts() - timedelta(days=days)
+    cutoff_aware = _now_ts() - timedelta(days=days)
 
     if USE_SQLITE:
+        cutoff_naive = _now_utc_naive() - timedelta(days=days)
+        cutoff_str = cutoff_naive.isoformat()
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 c.row_factory = sqlite3.Row
-                # cutoff_str для сравнения в SQLite
-                cutoff_str = cutoff.isoformat()
                 rows = c.execute(
                     "SELECT * FROM users WHERE last_active < ? AND is_banned = 0 AND notifications = 1",
                     (cutoff_str,)
                 ).fetchall()
                 return [dict(r) for r in rows]
-
         return await asyncio.to_thread(_f)
 
     pool = await DatabasePool.get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM users WHERE last_active < $1 AND is_banned = 0 AND notifications = 1",
-            cutoff
+            cutoff_aware
         )
         return [dict(r) for r in rows]
 
@@ -775,14 +728,11 @@ async def get_db_stats() -> dict:
     """Общая статистика для админ-панели."""
     if USE_SQLITE:
         def _f():
-            import sqlite3
-            from config import DB_PATH
             with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
                 users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
                 msgs = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
                 banned = c.execute("SELECT COUNT(*) FROM users WHERE is_banned=1").fetchone()[0]
                 return {"users": users, "messages": msgs, "banned": banned}
-
         return await asyncio.to_thread(_f)
 
     pool = await DatabasePool.get_pool()

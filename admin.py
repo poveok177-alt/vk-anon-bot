@@ -1,10 +1,13 @@
+# admin.py
 """
 admin.py — Команды администратора VK-бота.
 """
 
 import asyncio
+import random
 import logging
 from vkbottle import API
+from vkbottle import Keyboard, KeyboardButtonColor, OpenLink
 
 from config import ADMIN_VK_ID, BOT_LINK, VK_GROUP_ID, get_message_link
 from database import (
@@ -15,6 +18,10 @@ from database import (
 from keyboards import admin_menu_kb, ad_panel_kb, message_actions_kb
 
 logger = logging.getLogger(__name__)
+
+
+def _rand() -> int:
+    return random.randint(1, 2_147_483_647)
 
 
 def is_admin(vk_id: int) -> bool:
@@ -58,7 +65,7 @@ async def cmd_admin(api: API, admin_id: int):
             f"/ad_preview — предпросмотр"
         ),
         keyboard=admin_menu_kb(),
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -74,7 +81,6 @@ async def cmd_stats(api: API, admin_id: int):
         # msgs_today требует отдельного запроса — считаем через существующие функции
         from database import USE_SQLITE
         if USE_SQLITE:
-            import asyncio
             import sqlite3
             from config import DB_PATH
 
@@ -110,7 +116,7 @@ async def cmd_stats(api: API, admin_id: int):
             f"💬 Сообщений сегодня: {msgs_today}\n"
             f"⚠️ Жалоб всего: {reports}"
         ),
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -119,7 +125,7 @@ async def cmd_ban(api: API, admin_id: int, target_id: int):
     await api.messages.send(
         user_id=admin_id,
         message=f"🚫 Пользователь {target_id} заблокирован.",
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -128,7 +134,7 @@ async def cmd_unban(api: API, admin_id: int, target_id: int):
     await api.messages.send(
         user_id=admin_id,
         message=f"✅ Пользователь {target_id} разблокирован.",
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -138,7 +144,7 @@ async def cmd_userinfo(api: API, admin_id: int, target_id: int):
         await api.messages.send(
             user_id=admin_id,
             message=f"⚠️ Пользователь {target_id} не найден в базе.",
-            random_id=0,
+            random_id=_rand(),
         )
         return
 
@@ -156,7 +162,7 @@ async def cmd_userinfo(api: API, admin_id: int, target_id: int):
             f"📤 Отправлено: {stats['outgoing']}\n"
             f"✅ Ответил: {stats['replied']}"
         ),
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -168,12 +174,12 @@ async def cmd_broadcast(api: API, admin_id: int, text: str):
     await api.messages.send(
         user_id=admin_id,
         message=f"🚀 Начинаю рассылку на {len(users)} пользователей...",
-        random_id=0,
+        random_id=_rand(),
     )
 
     for uid in users:
         try:
-            await api.messages.send(user_id=uid, message=text, random_id=0)
+            await api.messages.send(user_id=uid, message=text, random_id=_rand())
             sent += 1
             await asyncio.sleep(0.05)
         except Exception as e:
@@ -193,7 +199,7 @@ async def cmd_broadcast(api: API, admin_id: int, text: str):
             f"⚠️ Ошибки: {errors}\n"
             f"Охват: {round(sent/len(users)*100) if users else 0}%"
         ),
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -206,7 +212,7 @@ async def cmd_fakebroadcast(api: API, admin_id: int, text: str):
     await api.messages.send(
         user_id=admin_id,
         message=f"🚀 Начинаю анонимную рассылку на {len(users)} пользователей...",
-        random_id=0,
+        random_id=_rand(),
     )
 
     for uid in users:
@@ -216,7 +222,7 @@ async def cmd_fakebroadcast(api: API, admin_id: int, text: str):
                 user_id=uid,
                 message=f"💌 Тебе пришло анонимное сообщение!\n\n{text}",
                 keyboard=message_actions_kb(saved["id"]),
-                random_id=0,
+                random_id=_rand(),
             )
             sent += 1
             await asyncio.sleep(0.05)
@@ -232,7 +238,7 @@ async def cmd_fakebroadcast(api: API, admin_id: int, text: str):
             f"⚠️ Ошибки: {errors}\n"
             f"Охват: {round(sent/len(users)*100) if users else 0}%"
         ),
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -244,18 +250,18 @@ async def cmd_fakemsg(api: API, admin_id: int, target_id: int, text: str):
             user_id=target_id,
             message=f"💌 Тебе пришло анонимное сообщение!\n\n{text}",
             keyboard=message_actions_kb(saved["id"]),
-            random_id=0,
+            random_id=_rand(),
         )
         await api.messages.send(
             user_id=admin_id,
             message=f"✅ Анонимка отправлена пользователю {target_id}",
-            random_id=0,
+            random_id=_rand(),
         )
     except Exception as e:
         await api.messages.send(
             user_id=admin_id,
             message=f"⚠️ Ошибка: {e}",
-            random_id=0,
+            random_id=_rand(),
         )
 
 
@@ -290,7 +296,7 @@ async def cmd_ad(api: API, admin_id: int):
             f"• AFTER_REPLY — после ответа"
         ),
         keyboard=ad_panel_kb(enabled),
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -301,7 +307,7 @@ async def cmd_ad_place(api: API, admin_id: int, place: str):
         await api.messages.send(
             user_id=admin_id,
             message=f"❌ Неверное место. Доступные: {', '.join(valid_places)}",
-            random_id=0,
+            random_id=_rand(),
         )
         return
 
@@ -309,7 +315,7 @@ async def cmd_ad_place(api: API, admin_id: int, place: str):
     await api.messages.send(
         user_id=admin_id,
         message=f"✅ Место показа изменено на {place}",
-        random_id=0,
+        random_id=_rand(),
     )
 
 
@@ -320,7 +326,7 @@ async def cmd_ad_preview(api: API, admin_id: int):
         await api.messages.send(
             user_id=admin_id,
             message="❌ Реклама выключена или текст пуст",
-            random_id=0,
+            random_id=_rand(),
         )
         return
 
@@ -331,14 +337,12 @@ async def cmd_ad_preview(api: API, admin_id: int):
     message_text = f"📢 *Предпросмотр рекламы*\n\n{ad_text}"
 
     if url:
-        # Отправляем как обычное сообщение с кнопкой
-        from vkbottle import Keyboard, KeyboardButtonColor, OpenLink
         kb = Keyboard(inline=True).add(OpenLink(btn_text, url), color=KeyboardButtonColor.PRIMARY)
         await api.messages.send(
             user_id=admin_id,
             message=message_text,
             keyboard=kb.get_json(),
-            random_id=0,
+            random_id=_rand(),
         )
     else:
-        await api.messages.send(user_id=admin_id, message=message_text, random_id=0)
+        await api.messages.send(user_id=admin_id, message=message_text, random_id=_rand())

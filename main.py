@@ -2,8 +2,7 @@
 """
 main.py — Точка входа VK-бота анонимных сообщений.
 """
-import logging
-logging.basicConfig(level=logging.DEBUG)
+
 import asyncio
 import json
 import logging
@@ -21,7 +20,7 @@ from database import (
 )
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
-    back_to_menu_kb, settings_kb, blocks_kb, ref_choice_kb,  # добавлено
+    back_to_menu_kb, settings_kb, blocks_kb, ref_choice_kb, share_command_kb,
 )
 from states import (
     set_state, clear_state, get_data, current_state,
@@ -47,16 +46,7 @@ def _rand() -> int:
 
 
 def _parse_payload(message: Message) -> dict:
-    """
-    Надёжный парсинг payload из сообщения VK.
-
-    VK может прислать payload в разных форматах:
-    - dict (современные версии vkbottle)
-    - JSON-строка (старые версии / некоторые клиенты)
-    - None (нет payload)
-
-    Возвращает dict всегда, никогда не падает.
-    """
+    """Надёжный парсинг payload из сообщения VK."""
     try:
         p = message.get_payload_json()
         if p is None:
@@ -76,26 +66,14 @@ def _parse_payload(message: Message) -> dict:
 
 
 def _extract_ref_id(payload: dict, text: str) -> int | None:
-    """
-    Извлекает ID владельца ссылки из всех возможных форматов VK deep link.
-
-    Поддерживаемые форматы:
-    1. payload {"command":"start","hash":"12345"}      — стандарт для vk.me/?start=12345
-    2. payload {"command":"start","hash":"ref_12345"}  — с префиксом ref_
-    3. payload {"command":"start","hash":"u12345"}     — с префиксом u/id
-    4. text "/start 12345"                             — текстовый формат
-    5. text "12345" при command=start                  — некоторые VK-клиенты
-    """
+    """Извлекает ID владельца ссылки из всех возможных форматов VK deep link."""
     def _parse_numeric(s: str) -> int | None:
-        """Пытается извлечь числовой ID из строки, включая префиксы."""
         s = s.strip()
         if not s:
             return None
-        # Чисто цифровой ID: "12345678"
         if s.isdigit():
             v = int(s)
             return v if v > 0 else None
-        # С префиксами: "ref_12345", "u12345", "id12345"
         for prefix in ("ref_", "id", "u"):
             if s.lower().startswith(prefix):
                 rest = s[len(prefix):]
@@ -104,21 +82,17 @@ def _extract_ref_id(payload: dict, text: str) -> int | None:
                     return v if v > 0 else None
         return None
 
-    # Формат 1–3: payload {"command": "start", "hash": "..."}
     if payload.get("command") == "start":
         raw_hash = str(payload.get("hash", "")).strip()
         ref = _parse_numeric(raw_hash)
         if ref:
             logger.info(f"[extract_ref] hash='{raw_hash}' → ref={ref}")
             return ref
-
-        # Формат 5: hash пуст, но текст сообщения содержит числовой ID
         ref = _parse_numeric(text)
         if ref:
             logger.info(f"[extract_ref] hash empty, text='{text}' → ref={ref}")
             return ref
 
-    # Формат 4: text "/start 12345"
     if text.startswith("/start "):
         part = text[7:].strip()
         ref = _parse_numeric(part)
@@ -131,7 +105,6 @@ def _extract_ref_id(payload: dict, text: str) -> int | None:
 
 
 def _is_start_event(payload: dict, text: str) -> bool:
-    """Определяет, является ли событие стартовым (кнопка «Начать» / deep link)."""
     return (
         payload.get("command") == "start"
         or text in ("Начать", "Start", "/start")
@@ -147,37 +120,27 @@ async def get_user_link(vk_id: int) -> str:
 async def send_main_menu(vk_id: int, text: str | None = None):
     await get_or_create_user(vk_id)
     link = await get_user_link(vk_id)
+
     if text is None:
         text = (
-            f"👀 Узнай, что о тебе думают на самом деле!\n\n"
-            f"👇 Твоя ссылка:\n{link}\n\n"
-            f"📤 Поделись ею — и получай анонимные сообщения!\n\n"
-            f"⚠️ Не отправляй оскорбления, угрозы или незаконный контент."
+            f"🔥 Узнай, что о тебе думают на самом деле!\n\n"
+            f"📤 Твоя ссылка:\n{link}\n\n"
+            f"✉️ Друзья отправят тебе анонимку, написав:\n"
+            f"`/start {vk_id}`\n\n"
+            f"⬇️ Нажми на кнопку, чтобы скопировать команду или поделиться ссылкой!"
         )
     await api.messages.send(
         user_id=vk_id,
         message=text,
-        keyboard=main_menu_kb(vk_id, link),
+        keyboard=share_command_kb(vk_id),
         random_id=_rand(),
     )
 
 
 async def _handle_start(message: Message, ref: int | None):
-    """
-    Обработка /start и deep link.
-
-    ref=None → пользователь открыл бота сам → главное меню.
-    ref=X    → пользователь перешёл по ссылке X → режим отправки анонимки.
-
-    ВАЖНО: эта функция вызывается в двух сценариях:
-    1. Нажата кнопка «Начать» с payload (deep link) — ref известен.
-    2. Нажата кнопка «Начать» без payload (дублирующее событие от VK или обычный старт).
-       В этом случае ref=None и мы НЕ должны сбрасывать уже установленное состояние.
-    """
     vk_id = message.from_id
     logger.info(f"[start] user={vk_id}, ref={ref} | text={message.text!r}")
 
-    # Получаем имя пользователя из VK API
     try:
         info = await api.users.get(user_ids=[vk_id])
         first_name = info[0].first_name if info else ""
@@ -187,30 +150,14 @@ async def _handle_start(message: Message, ref: int | None):
 
     await get_or_create_user(vk_id, first_name, last_name)
 
-    # ─────────────────────────────────────────────────────────────────────
-    # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ:
-    # Если ref=None (нет параметра deep link), НЕ сбрасываем состояние,
-    # если пользователь уже ждёт ввода анонимки.
-    #
-    # Зачем: VK может прислать ДВА события при переходе по deep link:
-    #   1. Событие с payload={"command":"start","hash":"REF"} → устанавливает STATE_WAITING_MESSAGE
-    #   2. Событие с text="Начать" без payload → без этой защиты сбрасывало бы состояние
-    # Без защиты второе событие уничтожало результат первого.
-    # ─────────────────────────────────────────────────────────────────────
     if ref is None:
         existing_state = current_state(vk_id)
         if existing_state == STATE_WAITING_MESSAGE:
-            logger.info(
-                f"[start] user={vk_id}: получили 'Начать' без ref, "
-                f"но состояние STATE_WAITING_MESSAGE уже установлено — игнорируем"
-            )
-            # Пользователь уже в режиме отправки анонимки — ничего не делаем
+            logger.info(f"[start] user={vk_id}: получили 'Начать' без ref, но состояние уже установлено — игнорируем")
             return
 
-    # Сбрасываем состояние только когда это безопасно
     clear_state(vk_id)
 
-    # Уведомляем администратора
     try:
         await api.messages.send(
             user_id=ADMIN_VK_ID,
@@ -220,7 +167,6 @@ async def _handle_start(message: Message, ref: int | None):
     except Exception:
         pass
 
-    # Если есть реферал — предлагаем написать анонимку
     if ref and ref != vk_id:
         target = await get_user(ref)
         if not target:
@@ -235,7 +181,6 @@ async def _handle_start(message: Message, ref: int | None):
                 target = None
 
         if target and not target.get("is_banned"):
-            # Показываем меню выбора: отправить или начать получать
             await api.messages.send(
                 user_id=vk_id,
                 message=(
@@ -265,8 +210,6 @@ def _ad_should_show(ad: dict, place: str) -> bool:
 
 
 # ─── ЕДИНЫЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ ────────────────────────────────────────
-
-# main.py — полная функция handle_message
 
 @bot.on.message()
 async def handle_message(message: Message):
@@ -384,6 +327,26 @@ async def handle_message(message: Message):
     if cmd == "main_menu" or text in ("🏠 Главное меню", "❌ Отмена"):
         clear_state(vk_id)
         await send_main_menu(vk_id)
+        return
+
+    # ── Копирование команды ─────────────────────────────────────────────
+    if cmd == "copy_command":
+        target_id = payload.get("user_id", vk_id)
+        command_text = f"/start {target_id}"
+        await api.messages.send(
+            user_id=vk_id,
+            message=(
+                f"📋 **Скопируй эту команду:**\n\n"
+                f"`{command_text}`\n\n"
+                f"Отправь её друзьям, чтобы они могли написать тебе анонимно!\n\n"
+                f"💡 **Как использовать:**\n"
+                f"1. Скопируй команду выше\n"
+                f"2. Перешли другу в личные сообщения\n"
+                f"3. Друг отправит её в нашего бота\n"
+                f"4. Друг выберет «Отправить анонимно» и напишет тебе!"
+            ),
+            random_id=_rand(),
+        )
         return
 
     # ── Обработка выбора действия после перехода по ссылке ───────────────

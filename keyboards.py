@@ -1,18 +1,11 @@
 """
 keyboards.py — Клавиатуры для VK-бота.
-
-VK поддерживает два типа кнопок:
-  - Inline-клавиатуры (прикреплены к сообщению)
-  - Reply-клавиатуры (снизу экрана)
-
-Используем только inline — они удобнее для анонимок.
 """
 
 from vkbottle import Keyboard, KeyboardButtonColor, Text, OpenLink, Callback
 
 
 def main_menu_kb(vk_id: int, link: str) -> str:
-    """Главное меню пользователя."""
     kb = (
         Keyboard(inline=True)
         .add(Text("📤 Поделиться ссылкой", payload={"cmd": "my_link"}), color=KeyboardButtonColor.PRIMARY)
@@ -29,7 +22,6 @@ def main_menu_kb(vk_id: int, link: str) -> str:
 
 
 def message_actions_kb(msg_id: int) -> str:
-    """Кнопки под полученным анонимным сообщением."""
     kb = (
         Keyboard(inline=True)
         .add(Text("✏️ Ответить анонимно", payload={"cmd": "reply", "msg_id": msg_id}), color=KeyboardButtonColor.PRIMARY)
@@ -41,18 +33,12 @@ def message_actions_kb(msg_id: int) -> str:
 
 
 def cancel_kb() -> str:
-    kb = (
-        Keyboard(inline=True)
-        .add(Text("❌ Отмена", payload={"cmd": "main_menu"}), color=KeyboardButtonColor.NEGATIVE)
-    )
+    kb = Keyboard(inline=True).add(Text("❌ Отмена", payload={"cmd": "main_menu"}), color=KeyboardButtonColor.NEGATIVE)
     return kb.get_json()
 
 
 def back_to_menu_kb() -> str:
-    kb = (
-        Keyboard(inline=True)
-        .add(Text("🏠 Главное меню", payload={"cmd": "main_menu"}))
-    )
+    kb = Keyboard(inline=True).add(Text("🏠 Главное меню", payload={"cmd": "main_menu"}))
     return kb.get_json()
 
 
@@ -77,8 +63,6 @@ def blocks_kb(blocked_list: list[dict]) -> str:
     return kb.get_json()
 
 
-# ─── ADMIN ────────────────────────────────────────────────────────────────────
-
 def admin_menu_kb() -> str:
     kb = (
         Keyboard(inline=True)
@@ -95,7 +79,7 @@ def admin_menu_kb() -> str:
 
 def ad_panel_kb(enabled: bool) -> str:
     toggle_text = "❌ Выключить рекламу" if enabled else "✅ Включить рекламу"
-    toggle_cmd  = "adm_ad_off" if enabled else "adm_ad_on"
+    toggle_cmd = "adm_ad_off" if enabled else "adm_ad_on"
     kb = (
         Keyboard(inline=True)
         .add(Text(toggle_text, payload={"cmd": toggle_cmd}),
@@ -115,10 +99,19 @@ def mod_actions_kb(msg_id: int, sender_id: int) -> str:
         .add(Text("✅ Игнор", payload={"cmd": "mod_ignore", "msg_id": msg_id}), color=KeyboardButtonColor.POSITIVE)
     )
     return kb.get_json()
-# keyboards.py — добавьте в конец файла
+
+
+def share_command_kb(vk_id: int) -> str:
+    kb = (
+        Keyboard(inline=True)
+        .add(Text("📋 Скопировать команду", payload={"cmd": "copy_command", "user_id": vk_id}), color=KeyboardButtonColor.PRIMARY)
+        .row()
+        .add(Text("📤 Поделиться ссылкой", payload={"cmd": "my_link"}))
+    )
+    return kb.get_json()
+
 
 def ref_choice_kb(target_id: int) -> str:
-    """Клавиатура для выбора действия после перехода по реферальной ссылке."""
     kb = (
         Keyboard(inline=True)
         .add(Text("✉️ Отправить анонимно", payload={"cmd": "send_to_ref", "target_id": target_id}),

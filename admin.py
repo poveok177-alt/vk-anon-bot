@@ -9,7 +9,7 @@ import logging
 from vkbottle import API
 from vkbottle import Keyboard, KeyboardButtonColor, OpenLink
 
-from config import ADMIN_VK_ID, VK_GROUP_ID, get_message_link  # BOT_LINK удалён
+from config import ADMIN_VK_ID, VK_GROUP_ID, get_message_link
 from database import (
     get_total_users, get_all_users_for_broadcast,
     get_user, ban_user, unban_user, get_user_stats,
@@ -69,7 +69,6 @@ async def cmd_admin(api: API, admin_id: int):
     )
 
 
-# ... остальные функции без изменений ...
 async def cmd_stats(api: API, admin_id: int):
     total = await get_total_users()
 
@@ -79,7 +78,6 @@ async def cmd_stats(api: API, admin_id: int):
         msgs_total = db_stats.get("messages", 0)
         banned = db_stats.get("banned", 0)
 
-        # msgs_today требует отдельного запроса — считаем через существующие функции
         from database import USE_SQLITE
         if USE_SQLITE:
             import sqlite3
@@ -98,7 +96,6 @@ async def cmd_stats(api: API, admin_id: int):
             from database import DatabasePool
             pool = await DatabasePool.get_pool()
             async with pool.acquire() as conn:
-                from datetime import date
                 msgs_today = await conn.fetchval(
                     "SELECT COUNT(*) FROM messages WHERE created_at::date = CURRENT_DATE"
                 )
@@ -168,7 +165,6 @@ async def cmd_userinfo(api: API, admin_id: int, target_id: int):
 
 
 async def cmd_broadcast(api: API, admin_id: int, text: str):
-    """Обычная рассылка всем пользователям."""
     users = await get_all_users_for_broadcast()
     sent = blocked = errors = 0
 
@@ -205,7 +201,6 @@ async def cmd_broadcast(api: API, admin_id: int, text: str):
 
 
 async def cmd_fakebroadcast(api: API, admin_id: int, text: str):
-    """Рассылка анонимных сообщений всем пользователям (от имени бота)."""
     users = await get_all_users_for_broadcast()
     sent = 0
     errors = 0
@@ -244,7 +239,6 @@ async def cmd_fakebroadcast(api: API, admin_id: int, text: str):
 
 
 async def cmd_fakemsg(api: API, admin_id: int, target_id: int, text: str):
-    """Отправить анонимное сообщение конкретному пользователю от имени бота."""
     try:
         saved = await save_message(sender_id=admin_id, receiver_id=target_id, text=text)
         await api.messages.send(
@@ -302,7 +296,6 @@ async def cmd_ad(api: API, admin_id: int):
 
 
 async def cmd_ad_place(api: API, admin_id: int, place: str):
-    """Установить место показа рекламы."""
     valid_places = ["AFTER_SEND", "AFTER_RECEIVE", "AFTER_REPLY"]
     if place not in valid_places:
         await api.messages.send(
@@ -321,7 +314,6 @@ async def cmd_ad_place(api: API, admin_id: int, place: str):
 
 
 async def cmd_ad_preview(api: API, admin_id: int):
-    """Предпросмотр рекламы."""
     ad = await get_ad()
     if not ad.get("enabled") or not ad.get("text"):
         await api.messages.send(

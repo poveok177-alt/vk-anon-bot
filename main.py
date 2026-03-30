@@ -2,7 +2,8 @@
 """
 main.py — Точка входа VK-бота анонимных сообщений.
 """
-
+import logging
+logging.basicConfig(level=logging.DEBUG)
 import asyncio
 import json
 import logging

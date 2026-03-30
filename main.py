@@ -1,4 +1,4 @@
-# main.py (полностью, с изменениями)
+# main.py (исправленная версия — убраны <code> и другие правки)
 """
 main.py — Точка входа VK-бота анонимных сообщений.
 """
@@ -175,7 +175,7 @@ async def send_main_menu(vk_id: int, text: str | None = None):
             f"2️⃣ Друзья перейдут в бота и введут твой код в чат.\n"
             f"3️⃣ Ты получишь их сообщения прямо здесь!\n\n"
             f"🔗 ТВОЯ ССЫЛКА:\n{link}\n"
-            f"🔑 ТВОЙ СЕКРЕТНЫЙ КОД:\n<code>/start {vk_id}</code>\n\n"
+            f"🔑 ТВОЙ СЕКРЕТНЫЙ КОД:\n/start {vk_id}\n\n"
             f"👇 Нажми на кнопку, чтобы поделиться с миром!"
         )
     await api.messages.send(
@@ -411,11 +411,14 @@ async def handle_message(message: Message):
             f"Введи мой код в чат: {command}\n\n"
             f"Жду твоих откровений... 👇"
         )
-        encoded_text = urllib.parse.quote(story_text)
-        stories_url = f"https://vk.com/stories?act=create&text={encoded_text}"
         await api.messages.send(
             user_id=vk_id,
-            message=f"📱 Перейди по ссылке, чтобы опубликовать историю:\n{stories_url}",
+            message="📱 Скопируй этот текст и отправь в сторис:",
+            random_id=_rand(),
+        )
+        await api.messages.send(
+            user_id=vk_id,
+            message=story_text,
             random_id=_rand(),
         )
         return
@@ -432,11 +435,14 @@ async def handle_message(message: Message):
             f"3️⃣ Пиши всё, что на уме.\n\n"
             f"Жду твое сообщение... 🔥"
         )
-        encoded_text = urllib.parse.quote(wall_text)
-        wall_url = f"https://vk.com/feed?section=post&text={encoded_text}"
         await api.messages.send(
             user_id=vk_id,
-            message=f"📝 Перейди по ссылке, чтобы опубликовать пост на стене:\n{wall_url}",
+            message="📝 Скопируй этот текст и опубликуй на стене:",
+            random_id=_rand(),
+        )
+        await api.messages.send(
+            user_id=vk_id,
+            message=wall_text,
             random_id=_rand(),
         )
         return
@@ -455,7 +461,12 @@ async def handle_message(message: Message):
         )
         await api.messages.send(
             user_id=vk_id,
-            message=f"📋 Скопируй этот текст и отправь друзьям:\n\n{text_to_copy}",
+            message="📋 Скопируй этот текст и отправь друзьям:",
+            random_id=_rand(),
+        )
+        await api.messages.send(
+            user_id=vk_id,
+            message=text_to_copy,
             random_id=_rand(),
         )
         return
@@ -530,7 +541,7 @@ async def handle_message(message: Message):
                     f"2️⃣ Размести их в сторис или в профиле.\n"
                     f"3️⃣ Получай сообщения, о которых ты даже не догадывался!\n\n"
                     f"🔗 ТВОЯ ССЫЛКА:\n{sender_link}\n"
-                    f"🔑 ТВОЙ КОД:\n<code>{sender_command}</code>\n"
+                    f"🔑 ТВОЙ КОД:\n/start {vk_id}\n"
                     f"{ad_block}"
                 ),
                 keyboard=after_send_kb(vk_id),

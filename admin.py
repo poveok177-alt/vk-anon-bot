@@ -9,7 +9,7 @@ import logging
 from vkbottle import API
 from vkbottle import Keyboard, KeyboardButtonColor, OpenLink
 
-from config import ADMIN_VK_ID, BOT_LINK, VK_GROUP_ID, get_message_link
+from config import ADMIN_VK_ID, VK_GROUP_ID, get_message_link  # BOT_LINK удалён
 from database import (
     get_total_users, get_all_users_for_broadcast,
     get_user, ban_user, unban_user, get_user_stats,
@@ -69,6 +69,7 @@ async def cmd_admin(api: API, admin_id: int):
     )
 
 
+# ... остальные функции без изменений ...
 async def cmd_stats(api: API, admin_id: int):
     total = await get_total_users()
 

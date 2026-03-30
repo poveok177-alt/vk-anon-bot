@@ -19,6 +19,15 @@ VK_GROUP_ID = int(os.getenv("VK_GROUP_ID", "0"))   # ID сообщества (ч
 # Если нет — используется числовой ID: vk.com/im?sel=-GROUP_ID&start=USER_ID
 VK_GROUP_SHORT_NAME = os.getenv("VK_GROUP_SHORT_NAME", "")
 
+# Путь к файлу SQLite (используется только при отсутствии DATABASE_URL)
+DB_PATH = os.getenv("DB_PATH", "./data/bot.db")
+
+# Создаём папку для базы данных, если её нет (чтобы избежать ошибок при записи)
+if not os.path.exists(os.path.dirname(DB_PATH)):
+    try:
+        os.makedirs(os.path.dirname(DB_PATH))
+    except Exception:
+        pass  # если не удалось — ошибка будет позже при подключении
 
 # ─── Формирование deep link ────────────────────────────────────────────────────
 

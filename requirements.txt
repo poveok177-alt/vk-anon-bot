@@ -1,4 +1,6 @@
-vkbottle
-python-dotenv
-aiohttp
-asyncpg
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+vkbottle==4.3.4
+supabase==1.2.0
+python-dotenv==1.0.0
+httpx==0.26.0

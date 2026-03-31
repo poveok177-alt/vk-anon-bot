@@ -1,11 +1,13 @@
 # database.py
-# Использует urllib (встроенный) + asyncio.to_thread + семафор,
-# чтобы избежать [Errno 16] Device or resource busy в Vercel serverless.
+# Резолвит IP Supabase один раз при старте, чтобы обойти
+# [Errno 16] Device or resource busy в Vercel Python serverless.
 
 import os
 import json
+import socket
 import asyncio
 import urllib.request
+import urllib.parse
 import urllib.error
 from datetime import datetime, timezone, timedelta
 import logging
@@ -15,18 +17,29 @@ logger = logging.getLogger(__name__)
 
 _URL: str = ""
 _KEY: str = ""
-
-# Семафор: не более 1 запроса к Supabase одновременно в рамках одного инстанса.
-# Это устраняет гонку за DNS/сокет при параллельных вебхуках.
-_SEM = asyncio.Semaphore(1)
+_HOST: str = ""       # hostname, например abc.supabase.co
+_HOST_IP: str = ""    # резолвленный IP
 
 
 def init_supabase():
-    global _URL, _KEY
+    global _URL, _KEY, _HOST, _HOST_IP
     _URL = os.getenv("SUPABASE_URL", "").rstrip("/")
     _KEY = os.getenv("SUPABASE_KEY", "")
     if not _URL or not _KEY:
         raise Exception("Missing SUPABASE_URL or SUPABASE_KEY")
+
+    # Парсим hostname из URL
+    parsed = urllib.parse.urlparse(_URL)
+    _HOST = parsed.hostname or ""
+
+    # Резолвим IP один раз синхронно при старте
+    try:
+        _HOST_IP = socket.gethostbyname(_HOST)
+        logger.info(f"Supabase {_HOST} -> {_HOST_IP}")
+    except Exception as e:
+        logger.warning(f"DNS pre-resolve failed: {e}, will use hostname")
+        _HOST_IP = _HOST
+
     logger.info("Supabase credentials loaded")
 
 
@@ -34,92 +47,81 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _rest_url(path: str) -> str:
-    return f"{_URL}/rest/v1/{path}"
+def _rest_url(path: str, params: dict = None) -> str:
+    # Если IP успешно резолвнулся — подставляем IP, Host передаём в заголовке
+    base = _URL if not _HOST_IP or _HOST_IP == _HOST else _URL.replace(_HOST, _HOST_IP)
+    url = f"{base}/rest/v1/{path}"
+    if params:
+        qs = "&".join(f"{urllib.parse.quote(str(k))}={urllib.parse.quote(str(v))}" for k, v in params.items())
+        url += "?" + qs
+    return url
 
 
 def _base_headers() -> dict:
-    return {
+    h = {
         "apikey": _KEY,
         "Authorization": f"Bearer {_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
+    # Если используем IP — нужен Host заголовок
+    if _HOST_IP and _HOST_IP != _HOST:
+        h["Host"] = _HOST
+    return h
 
 
-def _build_qs(params: dict) -> str:
-    if not params:
-        return ""
-    parts = []
-    for k, v in params.items():
-        parts.append(f"{urllib.parse.quote(str(k))}={urllib.parse.quote(str(v))}")
-    return "?" + "&".join(parts)
-
-
-import urllib.parse
-
-
-def _sync_request(method: str, path: str, params: dict = None, body: dict = None, extra_headers: dict = None) -> tuple:
-    """Выполняет синхронный HTTP-запрос через urllib. Возвращает (status, data)."""
-    url = _rest_url(path) + _build_qs(params or {})
+def _sync_request(method: str, path: str, params: dict = None,
+                  body: dict = None, extra_headers: dict = None):
+    url = _rest_url(path, params)
     headers = _base_headers()
     if extra_headers:
         headers.update(extra_headers)
-
     data_bytes = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
-
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            status = resp.status
+        with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
-            content_range = resp.headers.get("content-range", "")
-            body_data = json.loads(raw) if raw.strip() else []
-            return status, body_data, content_range
+            cr = resp.headers.get("content-range", "")
+            data = json.loads(raw) if raw.strip() else []
+            return data, cr
     except urllib.error.HTTPError as e:
         raw = e.read()
-        logger.error(f"HTTP {e.code} on {method} {url}: {raw[:200]}")
+        logger.error(f"HTTP {e.code} {method} {url}: {raw[:300]}")
         raise
     except Exception as e:
         logger.error(f"Request error {method} {url}: {e}")
         raise
 
 
-async def _req(method: str, path: str, params: dict = None, body: dict = None, extra_headers: dict = None):
-    async with _SEM:
-        status, data, cr = await asyncio.to_thread(
-            _sync_request, method, path, params, body, extra_headers
-        )
-    return status, data, cr
+async def _req(method: str, path: str, params: dict = None,
+               body: dict = None, extra_headers: dict = None):
+    return await asyncio.to_thread(_sync_request, method, path, params, body, extra_headers)
 
 
 async def _get(path: str, params: dict = None) -> list:
-    _, data, _ = await _req("GET", path, params=params)
+    data, _ = await _req("GET", path, params=params)
     return data if isinstance(data, list) else []
 
 
 async def _post(path: str, body: dict) -> list:
-    _, data, _ = await _req("POST", path, body=body)
+    data, _ = await _req("POST", path, body=body)
     return data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
 
 
 async def _patch(path: str, body: dict, params: dict = None) -> list:
-    _, data, _ = await _req("PATCH", path, params=params, body=body)
+    data, _ = await _req("PATCH", path, params=params, body=body)
     return data if isinstance(data, list) else []
 
 
 async def _delete(path: str, params: dict = None) -> list:
-    _, data, _ = await _req("DELETE", path, params=params,
-                             extra_headers={"Prefer": "return=representation"})
+    data, _ = await _req("DELETE", path, params=params,
+                          extra_headers={"Prefer": "return=representation"})
     return data if isinstance(data, list) else []
 
 
 async def _count(path: str, params: dict = None) -> int:
     p = {**(params or {}), "select": "id"}
-    h = {"Prefer": "count=exact", **_base_headers()}
-    # HEAD через urllib — делаем GET с head-like логикой
-    async with _SEM:
-        _, _, cr = await asyncio.to_thread(_sync_request, "GET", path, p, None, {"Prefer": "count=exact"})
+    _, cr = await _req("GET", path, params=p, extra_headers={"Prefer": "count=exact"})
     try:
         return int(cr.split("/")[-1])
     except Exception:
@@ -142,15 +144,9 @@ async def get_or_create_user(vk_id: int, first_name: str = "", last_name: str = 
     else:
         now = _now_iso()
         new_user = {
-            "vk_id": vk_id,
-            "first_name": first_name,
-            "last_name": last_name,
-            "notifications": True,
-            "is_banned": False,
-            "msg_count": 0,
-            "link_clicks": 0,
-            "created_at": now,
-            "last_active": now,
+            "vk_id": vk_id, "first_name": first_name, "last_name": last_name,
+            "notifications": True, "is_banned": False, "msg_count": 0,
+            "link_clicks": 0, "created_at": now, "last_active": now,
         }
         rows = await _post("users", new_user)
         return rows[0] if rows else new_user
@@ -189,14 +185,8 @@ async def get_user_stats(vk_id: int) -> dict:
 
 async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
     now = _now_iso()
-    data = {
-        "sender_id": sender_id,
-        "receiver_id": receiver_id,
-        "text": text,
-        "is_replied": False,
-        "is_deleted": False,
-        "created_at": now,
-    }
+    data = {"sender_id": sender_id, "receiver_id": receiver_id, "text": text,
+            "is_replied": False, "is_deleted": False, "created_at": now}
     rows = await _post("messages", data)
     return rows[0] if rows else data
 
@@ -216,11 +206,8 @@ async def mark_deleted(msg_id: int):
 
 async def get_last_messages(vk_id: int, limit: int = 5) -> List[dict]:
     return await _get("messages", {
-        "receiver_id": f"eq.{vk_id}",
-        "is_deleted": "eq.false",
-        "select": "*",
-        "order": "created_at.desc",
-        "limit": str(limit),
+        "receiver_id": f"eq.{vk_id}", "is_deleted": "eq.false",
+        "select": "*", "order": "created_at.desc", "limit": str(limit),
     })
 
 
@@ -307,10 +294,8 @@ async def is_ad_enabled() -> bool:
 async def get_inactive_users(days: int = 3) -> List[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     return await _get("users", {
-        "last_active": f"lt.{cutoff}",
-        "is_banned": "eq.false",
-        "notifications": "eq.true",
-        "select": "*",
+        "last_active": f"lt.{cutoff}", "is_banned": "eq.false",
+        "notifications": "eq.true", "select": "*",
     })
 
 

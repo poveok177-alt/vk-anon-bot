@@ -13,7 +13,8 @@ from config import ADMIN_VK_ID
 from database import (
     get_total_users, get_all_users_for_broadcast,
     get_user, ban_user, unban_user, get_user_stats,
-    save_message, get_ad, set_ad,
+    save_message, get_ad, set_ad, get_db_stats,
+    get_messages_today, get_reports_total,
 )
 from keyboards import admin_menu_kb, ad_panel_kb, message_actions_kb
 
@@ -72,11 +73,11 @@ async def cmd_admin(api: API, admin_id: int):
 async def cmd_stats(api: API, admin_id: int):
     # Используем универсальные функции database
     total = await get_total_users()
-    db_stats = await get_db_stats()   # эта функция уже есть в database.py
+    db_stats = await get_db_stats()
     msgs_total = db_stats.get("messages", 0)
     banned = db_stats.get("banned", 0)
 
-    # Сообщения сегодня и жалобы – добавим отдельные запросы
+    # Сообщения сегодня и жалобы
     msgs_today = await get_messages_today()
     reports_total = await get_reports_total()
 

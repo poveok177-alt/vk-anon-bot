@@ -863,8 +863,14 @@ async def process_message(message: dict):
 # --- FastAPI эндпоинты ---
 @app.get("/webhook")
 async def webhook_get(request: Request):
-    # Подтверждение сервера VK
-    return Response(content=CONFIRM_TOKEN, media_type="text/plain")
+    # Для подтверждения сервера VK
+    # Если CONFIRM_TOKEN не совпадает с ожидаемым, используем захардкоженное значение
+    expected_token = "0b7ca364"  # Строка из настроек VK
+    token = CONFIRM_TOKEN
+    if token != expected_token:
+        logger.warning(f"CONFIRM_TOKEN={token} не совпадает с ожидаемым {expected_token}, используем ожидаемый")
+        token = expected_token
+    return Response(content=token, media_type="text/plain")
 
 @app.post("/webhook")
 async def webhook_post(request: Request):

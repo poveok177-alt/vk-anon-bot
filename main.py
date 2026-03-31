@@ -881,7 +881,7 @@ async def webhook_post(request: Request):
     try:
         if data.get("type") == "message_new":
             message = data["object"]["message"]
-            asyncio.create_task(process_message(message))
+            await process_message(message)
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")
 

@@ -861,27 +861,10 @@ async def process_message(message: dict):
 
 
 # --- FastAPI эндпоинты ---
-# --- FastAPI эндпоинты ---
 @app.get("/webhook")
 async def webhook_get(request: Request):
-    # Жёстко заданная строка подтверждения
+    # GET запрос для тестирования
     return Response(content="e978140d", media_type="text/plain")
-
-@app.post("/webhook")
-async def webhook_post(request: Request):
-    data = await request.json()
-    logger.info(f"Received webhook: {data}")
-    try:
-        if data.get("type") == "message_new":
-            message = data["object"]["message"]
-            asyncio.create_task(process_message(message))
-    except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
-    return Response(content="ok")
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
 
 
 @app.post("/webhook")
@@ -891,6 +874,7 @@ async def webhook_post(request: Request):
 
     # Обработка подтверждения сервера
     if data.get("type") == "confirmation":
+        logger.info(f"Confirmation request, returning token: e978140d")
         return Response(content="e978140d", media_type="text/plain")
 
     # Обработка новых сообщений
@@ -904,7 +888,22 @@ async def webhook_post(request: Request):
     return Response(content="ok")
 
 
-@app.get("/webhook")
-async def webhook_get(request: Request):
-    # GET запрос для тестирования
-    return Response(content="e978140d", media_type="text/plain")
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/cron/cleanup")
+async def cleanup():
+    """Эндпоинт для вызова по расписанию (например, Vercel Cron)"""
+    try:
+        await db.delete_old_messages(days=30)
+        return {"status": "ok", "message": "Cleanup done"}
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/cron/reminders")
+async def reminders():
+    return {"status": "ok", "message": "Reminders not implemented in this version"}

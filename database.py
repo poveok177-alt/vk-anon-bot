@@ -1,17 +1,24 @@
 # database.py
-# Обходит supabase-py SDK полностью — использует httpx.AsyncClient напрямую,
+# Использует urllib (встроенный) + asyncio.to_thread + семафор,
 # чтобы избежать [Errno 16] Device or resource busy в Vercel serverless.
 
 import os
-import httpx
+import json
+import asyncio
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 import logging
-from typing import Optional, List, Any
+from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
 _URL: str = ""
 _KEY: str = ""
+
+# Семафор: не более 1 запроса к Supabase одновременно в рамках одного инстанса.
+# Это устраняет гонку за DNS/сокет при параллельных вебхуках.
+_SEM = asyncio.Semaphore(1)
 
 
 def init_supabase():
@@ -23,7 +30,15 @@ def init_supabase():
     logger.info("Supabase credentials loaded")
 
 
-def _headers() -> dict:
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _rest_url(path: str) -> str:
+    return f"{_URL}/rest/v1/{path}"
+
+
+def _base_headers() -> dict:
     return {
         "apikey": _KEY,
         "Authorization": f"Bearer {_KEY}",
@@ -32,54 +47,83 @@ def _headers() -> dict:
     }
 
 
-def _rest(path: str) -> str:
-    return f"{_URL}/rest/v1/{path}"
+def _build_qs(params: dict) -> str:
+    if not params:
+        return ""
+    parts = []
+    for k, v in params.items():
+        parts.append(f"{urllib.parse.quote(str(k))}={urllib.parse.quote(str(v))}")
+    return "?" + "&".join(parts)
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+import urllib.parse
+
+
+def _sync_request(method: str, path: str, params: dict = None, body: dict = None, extra_headers: dict = None) -> tuple:
+    """Выполняет синхронный HTTP-запрос через urllib. Возвращает (status, data)."""
+    url = _rest_url(path) + _build_qs(params or {})
+    headers = _base_headers()
+    if extra_headers:
+        headers.update(extra_headers)
+
+    data_bytes = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            raw = resp.read()
+            content_range = resp.headers.get("content-range", "")
+            body_data = json.loads(raw) if raw.strip() else []
+            return status, body_data, content_range
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        logger.error(f"HTTP {e.code} on {method} {url}: {raw[:200]}")
+        raise
+    except Exception as e:
+        logger.error(f"Request error {method} {url}: {e}")
+        raise
+
+
+async def _req(method: str, path: str, params: dict = None, body: dict = None, extra_headers: dict = None):
+    async with _SEM:
+        status, data, cr = await asyncio.to_thread(
+            _sync_request, method, path, params, body, extra_headers
+        )
+    return status, data, cr
 
 
 async def _get(path: str, params: dict = None) -> list:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(_rest(path), headers=_headers(), params=params or {})
-        r.raise_for_status()
-        return r.json()
+    _, data, _ = await _req("GET", path, params=params)
+    return data if isinstance(data, list) else []
 
 
-async def _post(path: str, data: dict) -> list:
-    async with httpx.AsyncClient() as client:
-        r = await client.post(_rest(path), headers=_headers(), json=data)
-        r.raise_for_status()
-        return r.json()
+async def _post(path: str, body: dict) -> list:
+    _, data, _ = await _req("POST", path, body=body)
+    return data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
 
 
-async def _patch(path: str, data: dict, params: dict = None) -> list:
-    async with httpx.AsyncClient() as client:
-        r = await client.patch(_rest(path), headers=_headers(), json=data, params=params or {})
-        r.raise_for_status()
-        return r.json()
+async def _patch(path: str, body: dict, params: dict = None) -> list:
+    _, data, _ = await _req("PATCH", path, params=params, body=body)
+    return data if isinstance(data, list) else []
 
 
 async def _delete(path: str, params: dict = None) -> list:
-    async with httpx.AsyncClient() as client:
-        r = await client.delete(_rest(path), headers={**_headers(), "Prefer": "return=representation"}, params=params or {})
-        r.raise_for_status()
-        return r.json()
+    _, data, _ = await _req("DELETE", path, params=params,
+                             extra_headers={"Prefer": "return=representation"})
+    return data if isinstance(data, list) else []
 
 
 async def _count(path: str, params: dict = None) -> int:
-    """Возвращает количество строк через заголовок Content-Range."""
-    h = {**_headers(), "Prefer": "count=exact"}
     p = {**(params or {}), "select": "id"}
-    async with httpx.AsyncClient() as client:
-        r = await client.head(_rest(path), headers=h, params=p)
-        # Content-Range: 0-N/TOTAL
-        cr = r.headers.get("content-range", "0/0")
-        try:
-            return int(cr.split("/")[-1])
-        except Exception:
-            return 0
+    h = {"Prefer": "count=exact", **_base_headers()}
+    # HEAD через urllib — делаем GET с head-like логикой
+    async with _SEM:
+        _, _, cr = await asyncio.to_thread(_sync_request, "GET", path, p, None, {"Prefer": "count=exact"})
+    try:
+        return int(cr.split("/")[-1])
+    except Exception:
+        return 0
 
 
 # --- Users ------------------------------------------------------------
@@ -154,16 +198,6 @@ async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
         "created_at": now,
     }
     rows = await _post("messages", data)
-    # Увеличиваем msg_count через RPC (если есть), иначе пропускаем
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{_URL}/rest/v1/rpc/increment_msg_count",
-                headers=_headers(),
-                json={"user_vk_id": receiver_id},
-            )
-    except Exception:
-        pass
     return rows[0] if rows else data
 
 
@@ -181,14 +215,13 @@ async def mark_deleted(msg_id: int):
 
 
 async def get_last_messages(vk_id: int, limit: int = 5) -> List[dict]:
-    rows = await _get("messages", {
+    return await _get("messages", {
         "receiver_id": f"eq.{vk_id}",
         "is_deleted": "eq.false",
         "select": "*",
         "order": "created_at.desc",
         "limit": str(limit),
     })
-    return rows
 
 
 async def delete_old_messages(days: int = 30):

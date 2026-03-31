@@ -865,7 +865,7 @@ async def process_message(message: dict):
 async def webhook_get(request: Request):
     # Для подтверждения сервера VK
     # Если CONFIRM_TOKEN не совпадает с ожидаемым, используем захардкоженное значение
-    expected_token = "0b7ca364"  # Строка из настроек VK
+    expected_token = "e978140d"  # Строка из настроек VK
     token = CONFIRM_TOKEN
     if token != expected_token:
         logger.warning(f"CONFIRM_TOKEN={token} не совпадает с ожидаемым {expected_token}, используем ожидаемый")

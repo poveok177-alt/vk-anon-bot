@@ -861,16 +861,27 @@ async def process_message(message: dict):
 
 
 # --- FastAPI эндпоинты ---
+# --- FastAPI эндпоинты ---
 @app.get("/webhook")
 async def webhook_get(request: Request):
-    # Для подтверждения сервера VK
-    # Если CONFIRM_TOKEN не совпадает с ожидаемым, используем захардкоженное значение
-    expected_token = "e978140d"  # Строка из настроек VK
-    token = CONFIRM_TOKEN
-    if token != expected_token:
-        logger.warning(f"CONFIRM_TOKEN={token} не совпадает с ожидаемым {expected_token}, используем ожидаемый")
-        token = expected_token
-    return Response(content=token, media_type="text/plain")
+    # Жёстко заданная строка подтверждения
+    return Response(content="e978140d", media_type="text/plain")
+
+@app.post("/webhook")
+async def webhook_post(request: Request):
+    data = await request.json()
+    logger.info(f"Received webhook: {data}")
+    try:
+        if data.get("type") == "message_new":
+            message = data["object"]["message"]
+            asyncio.create_task(process_message(message))
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+    return Response(content="ok")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.post("/webhook")
 async def webhook_post(request: Request):

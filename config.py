@@ -1,85 +1,23 @@
-"""
-config.py — Конфигурация VK-бота анонимных сообщений.
-"""
-
+# config.py
 import os
-import logging
-import aiohttp
+import random
 
-logger = logging.getLogger(__name__)
+# VK
+VK_TOKEN = os.getenv("VK_TOKEN")
+GROUP_ID = int(os.getenv("GROUP_ID", 0))
+CONFIRM_TOKEN = os.getenv("CONFIRM_TOKEN")
 
-# ─── Основные токены и ID ──────────────────────────────────────────────────────
+# Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-VK_TOKEN = os.getenv("VK_TOKEN", "")          # Токен сообщества VK
-ADMIN_VK_ID = int(os.getenv("ADMIN_VK_ID", "0"))  # ID администратора (числовой)
-VK_GROUP_ID = int(os.getenv("VK_GROUP_ID", "0"))   # ID сообщества (числовой, без минуса)
+# Админ (можно задать через переменную)
+ADMIN_VK_ID = int(os.getenv("ADMIN_VK_ID", 0))
 
-# Короткое имя сообщества (например "myanonbot").
-# Если есть — ссылка будет красивее: vk.me/myanonbot?start=USER_ID
-# Если нет — используется числовой ID: vk.com/im?sel=-GROUP_ID&start=USER_ID
-VK_GROUP_SHORT_NAME = os.getenv("VK_GROUP_SHORT_NAME", "")
-
-# Путь к файлу SQLite (используется только при отсутствии DATABASE_URL)
-DB_PATH = os.getenv("DB_PATH", "./data/bot.db")
-
-# Создаём папку для базы данных, если её нет (чтобы избежать ошибок при записи)
-_db_dir = os.path.dirname(DB_PATH)
-if _db_dir:  # пропускаем, если dirname пустой (файл в текущей директории)
-    try:
-        os.makedirs(_db_dir, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"Не удалось создать папку для БД '{_db_dir}': {e}")
-
-# ─── Формирование deep link ────────────────────────────────────────────────────
-
+# Вспомогательные функции для ссылок (оставляем)
 def get_message_link(group_id: int, user_id: int) -> str:
-    """
-    Возвращает VK deep link для бота с параметром start=USER_ID.
+    return f"https://vk.me/public{group_id}?ref={user_id}"
 
-    При переходе по этой ссылке VK отправит боту:
-        payload = {"command": "start", "hash": "<user_id>"}
-    и/или текст "/start <user_id>".
-
-    Два возможных формата:
-    1. vk.me/GROUP_SHORT_NAME?start=USER_ID  (рекомендуется, нужно короткое имя)
-    2. vk.com/im?sel=-GROUP_ID&start=USER_ID (работает по числовому ID)
-    """
-    if VK_GROUP_SHORT_NAME:
-        return f"https://vk.me/{VK_GROUP_SHORT_NAME}?start={user_id}"
-    else:
-        return f"https://vk.com/im?sel=-{group_id}&start={user_id}"
-
-
-# ─── Сокращение ссылок через VK API ───────────────────────────────────────────
-
-async def get_short_link(url: str) -> str:
-    """
-    Сокращает URL через VK API (utils.getShortLink).
-    При ошибке возвращает оригинальный URL.
-    """
-    if not VK_TOKEN:
-        logger.warning("[get_short_link] VK_TOKEN не задан, возвращаю оригинал")
-        return url
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            params = {
-                "url": url,
-                "access_token": VK_TOKEN,
-                "v": "5.199",
-                "private": 0,
-            }
-            async with session.get(
-                "https://api.vk.com/method/utils.getShortLink",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                data = await resp.json()
-                short = data.get("response", {}).get("short_url", "")
-                if short:
-                    return short
-                logger.warning(f"[get_short_link] VK ответил: {data}")
-    except Exception as e:
-        logger.warning(f"[get_short_link] Ошибка: {e}")
-
-    return url
+async def get_short_link(full_link: str) -> str:
+    # Здесь можно использовать vk.cc, но для простоты возвращаем полную ссылку
+    return full_link

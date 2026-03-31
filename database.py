@@ -1,783 +1,204 @@
 # database.py
-"""
-database.py — PostgreSQL база данных для VK-бота анонимок.
-
-Таблицы:
-  users        — пользователи
-  messages     — анонимные сообщения
-  blocked      — блокировки
-  banned       — баны
-  reports      — жалобы
-  ad_settings  — настройки рекламы
-"""
-
 import os
-import asyncpg
-import asyncio
-import logging
+from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
+import logging
+from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
-# Получаем URL базы данных из переменных окружения
-DATABASE_URL = os.getenv("DATABASE_URL", os.getenv("POSTGRES_URL", ""))
-if not DATABASE_URL:
-    logger.warning("DATABASE_URL не задан! Будет использован SQLite fallback")
-    USE_SQLITE = True
-else:
-    USE_SQLITE = False
+# Инициализация Supabase клиента
+supabase: Client = None
 
-# Для SQLite fallback (если нужно)
-if USE_SQLITE:
-    import sqlite3
-    from config import DB_PATH
-    logger.info("Используется SQLite база данных")
+def init_supabase():
+    global supabase
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise Exception("Missing SUPABASE_URL or SUPABASE_KEY")
+    supabase = create_client(supabase_url, supabase_key)
+    logger.info("Supabase client initialized")
 
+# Вспомогательные функции для работы с датами
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-class DatabasePool:
-    """Пул соединений с PostgreSQL"""
-    _pool = None
-
-    @classmethod
-    async def get_pool(cls):
-        if cls._pool is None:
-            cls._pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
-        return cls._pool
-
-    @classmethod
-    async def close(cls):
-        if cls._pool:
-            await cls._pool.close()
-            cls._pool = None
-
-
-async def init_db():
-    """Создаёт все таблицы при первом запуске"""
-    if USE_SQLITE:
-        from config import DB_PATH
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-            c.row_factory = sqlite3.Row
-            _init_sqlite(c)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        # Таблица пользователей
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                vk_id           BIGINT PRIMARY KEY,
-                first_name      TEXT    DEFAULT '',
-                last_name       TEXT    DEFAULT '',
-                notifications   INTEGER DEFAULT 1,
-                is_banned       INTEGER DEFAULT 0,
-                msg_count       INTEGER DEFAULT 0,
-                link_clicks     INTEGER DEFAULT 0,
-                created_at      TIMESTAMPTZ NOT NULL,
-                last_active     TIMESTAMPTZ NOT NULL
-            )
-        """)
-
-        # Таблица сообщений
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id          SERIAL PRIMARY KEY,
-                sender_id   BIGINT NOT NULL,
-                receiver_id BIGINT NOT NULL,
-                text        TEXT    NOT NULL,
-                is_replied  INTEGER DEFAULT 0,
-                is_deleted  INTEGER DEFAULT 0,
-                created_at  TIMESTAMPTZ NOT NULL
-            )
-        """)
-
-        # Таблица блокировок (один пользователь заблокировал другого)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS blocked (
-                owner_id    BIGINT NOT NULL,
-                blocked_id  BIGINT NOT NULL,
-                PRIMARY KEY (owner_id, blocked_id)
-            )
-        """)
-
-        # Таблица глобальных банов (админских)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS banned (
-                vk_id       BIGINT PRIMARY KEY,
-                banned_at   TIMESTAMPTZ NOT NULL
-            )
-        """)
-
-        # Таблица жалоб
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS reports (
-                id          SERIAL PRIMARY KEY,
-                message_id  INTEGER NOT NULL,
-                reporter_id BIGINT NOT NULL,
-                created_at  TIMESTAMPTZ NOT NULL,
-                UNIQUE(message_id, reporter_id)
-            )
-        """)
-
-        # Таблица настроек рекламы
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ad_settings (
-                id       INTEGER PRIMARY KEY CHECK (id = 1),
-                enabled  INTEGER DEFAULT 0,
-                text     TEXT    DEFAULT '',
-                url      TEXT    DEFAULT '',
-                btn_text TEXT    DEFAULT '📢 Реклама',
-                place    TEXT    DEFAULT 'AFTER_SEND'
-            )
-        """)
-
-        # Начальная вставка настроек рекламы
-        await conn.execute("""
-            INSERT INTO ad_settings (id, enabled, text, url, btn_text, place)
-            VALUES (1, 0, '', '', '📢 Реклама', 'AFTER_SEND')
-            ON CONFLICT DO NOTHING
-        """)
-
-        # Создаём индексы
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_receiver ON messages(receiver_id)")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender_id)")
-
-    logger.info("PostgreSQL инициализирован")
-
-def _init_sqlite(c):
-    """Инициализация SQLite (fallback)"""
-    c.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            vk_id           INTEGER PRIMARY KEY,
-            first_name      TEXT    DEFAULT '',
-            last_name       TEXT    DEFAULT '',
-            notifications   INTEGER DEFAULT 1,
-            is_banned       INTEGER DEFAULT 0,
-            msg_count       INTEGER DEFAULT 0,
-            link_clicks     INTEGER DEFAULT 0,
-            created_at      TEXT    NOT NULL,
-            last_active     TEXT    NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender_id   INTEGER NOT NULL,
-            receiver_id INTEGER NOT NULL,
-            text        TEXT    NOT NULL,
-            is_replied  INTEGER DEFAULT 0,
-            is_deleted  INTEGER DEFAULT 0,
-            created_at  TEXT    NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS blocked (
-            owner_id    INTEGER NOT NULL,
-            blocked_id  INTEGER NOT NULL,
-            PRIMARY KEY (owner_id, blocked_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS banned (
-            vk_id       INTEGER PRIMARY KEY,
-            banned_at   TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS reports (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            message_id  INTEGER NOT NULL,
-            reporter_id INTEGER NOT NULL,
-            created_at  TEXT    NOT NULL,
-            UNIQUE(message_id, reporter_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS ad_settings (
-            id       INTEGER PRIMARY KEY CHECK (id = 1),
-            enabled  INTEGER DEFAULT 0,
-            text     TEXT    DEFAULT '',
-            url      TEXT    DEFAULT '',
-            btn_text TEXT    DEFAULT '📢 Реклама',
-            place    TEXT    DEFAULT 'AFTER_SEND'
-        );
-
-        INSERT OR IGNORE INTO ad_settings (id, enabled, text, url, btn_text, place)
-        VALUES (1, 0, '', '', '📢 Реклама', 'AFTER_SEND');
-
-        CREATE INDEX IF NOT EXISTS idx_msg_receiver ON messages(receiver_id);
-        CREATE INDEX IF NOT EXISTS idx_msg_sender   ON messages(sender_id);
-    """)
-
-    # Миграция для place
-    try:
-        c.execute("ALTER TABLE ad_settings ADD COLUMN place TEXT DEFAULT 'AFTER_SEND'")
-        logger.info("[DB] Добавлена колонка place в ad_settings")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" not in str(e):
-            logger.warning(f"[DB] Ошибка миграции: {e}")
-
-    c.execute("UPDATE ad_settings SET place = 'AFTER_SEND' WHERE place IS NULL")
-    logger.info("[DB] SQLite инициализирован")
-
-
-def _now() -> str:
-    """Возвращает строку с текущим временем UTC без часового пояса (для SQLite)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-
-
-def _now_ts() -> datetime:
-    """Возвращает aware datetime с UTC (для PostgreSQL)."""
-    return datetime.now(timezone.utc)
-
-def _now_utc_naive() -> datetime:
-    """Возвращает naive datetime UTC (для вычислений в SQLite)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-# ─── USERS ────────────────────────────────────────────────────────────────────
+# --- Users ------------------------------------------------------------
 
 async def get_or_create_user(vk_id: int, first_name: str = "", last_name: str = "") -> dict:
-    if USE_SQLITE:
-        return await _sqlite_get_or_create_user(vk_id, first_name, last_name)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM users WHERE vk_id = $1", vk_id)
-        now = _now_ts()
-
-        if row:
-            # Обновляем last_active и имя/фамилию, если были переданы новые данные
-            if first_name or last_name:
-                await conn.execute(
-                    "UPDATE users SET last_active = $1, first_name = $2, last_name = $3 WHERE vk_id = $4",
-                    now, first_name or row["first_name"], last_name or row["last_name"], vk_id
-                )
-            else:
-                await conn.execute("UPDATE users SET last_active = $1 WHERE vk_id = $2", now, vk_id)
-            res = dict(row)
-            res["last_active"] = now
-            if first_name:
-                res["first_name"] = first_name
-            if last_name:
-                res["last_name"] = last_name
-            return res
-
-        await conn.execute("""
-            INSERT INTO users (vk_id, first_name, last_name, created_at, last_active, notifications, is_banned, msg_count, link_clicks)
-            VALUES ($1, $2, $3, $4, $5, 1, 0, 0, 0)
-        """, vk_id, first_name, last_name, now, now)
-
-        return {
-            "vk_id": vk_id, "first_name": first_name, "last_name": last_name,
-            "notifications": 1, "is_banned": 0, "msg_count": 0, "link_clicks": 0,
-            "created_at": now, "last_active": now
+    # Проверяем, существует ли пользователь
+    resp = supabase.table("users").select("*").eq("vk_id", vk_id).execute()
+    if resp.data:
+        user = resp.data[0]
+        # Обновляем last_active и имя
+        updates = {"last_active": _now_iso()}
+        if first_name:
+            updates["first_name"] = first_name
+        if last_name:
+            updates["last_name"] = last_name
+        supabase.table("users").update(updates).eq("vk_id", vk_id).execute()
+        return {**user, **updates}
+    else:
+        # Создаём нового пользователя
+        now = _now_iso()
+        new_user = {
+            "vk_id": vk_id,
+            "first_name": first_name,
+            "last_name": last_name,
+            "notifications": True,
+            "is_banned": False,
+            "msg_count": 0,
+            "link_clicks": 0,
+            "created_at": now,
+            "last_active": now
         }
+        supabase.table("users").insert(new_user).execute()
+        return new_user
 
-async def _sqlite_get_or_create_user(vk_id: int, first_name: str = "", last_name: str = "") -> dict:
-    def _f():
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-            c.row_factory = sqlite3.Row
-            row = c.execute("SELECT * FROM users WHERE vk_id=?", (vk_id,)).fetchone()
-            if row:
-                row_dict = dict(row)
-                # Обновляем last_active и имя/фамилию, если были переданы новые данные
-                if first_name or last_name:
-                    new_fn = first_name or row_dict["first_name"]
-                    new_ln = last_name or row_dict["last_name"]
-                    c.execute(
-                        "UPDATE users SET last_active=?, first_name=?, last_name=? WHERE vk_id=?",
-                        (_now(), new_fn, new_ln, vk_id)
-                    )
-                    row_dict["first_name"] = new_fn
-                    row_dict["last_name"] = new_ln
-                else:
-                    c.execute("UPDATE users SET last_active=? WHERE vk_id=?", (_now(), vk_id))
-                return row_dict
-            now = _now()
-            c.execute(
-                "INSERT INTO users (vk_id,first_name,last_name,created_at,last_active) VALUES (?,?,?,?,?)",
-                (vk_id, first_name, last_name, now, now)
-            )
-            return {"vk_id": vk_id, "first_name": first_name, "last_name": last_name,
-                    "notifications": 1, "is_banned": 0, "msg_count": 0, "link_clicks": 0,
-                    "created_at": now, "last_active": now}
-    return await asyncio.to_thread(_f)
-
-
-async def get_user(vk_id: int) -> dict | None:
-    if USE_SQLITE:
-        return await _sqlite_get_user(vk_id)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM users WHERE vk_id = $1", vk_id)
-        return dict(row) if row else None
-
-
-async def _sqlite_get_user(vk_id: int) -> dict | None:
-    def _f():
-        with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-            c.row_factory = sqlite3.Row
-            row = c.execute("SELECT * FROM users WHERE vk_id=?", (vk_id,)).fetchone()
-            return dict(row) if row else None
-    return await asyncio.to_thread(_f)
-
+async def get_user(vk_id: int) -> Optional[dict]:
+    resp = supabase.table("users").select("*").eq("vk_id", vk_id).execute()
+    return resp.data[0] if resp.data else None
 
 async def update_last_active(vk_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute("UPDATE users SET last_active=? WHERE vk_id=?", (_now(), vk_id))
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET last_active = $1 WHERE vk_id = $2", _now_ts(), vk_id)
-
+    supabase.table("users").update({"last_active": _now_iso()}).eq("vk_id", vk_id).execute()
 
 async def set_notifications(vk_id: int, val: bool):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute("UPDATE users SET notifications=? WHERE vk_id=?", (int(val), vk_id))
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET notifications = $1 WHERE vk_id = $2", int(val), vk_id)
-
+    supabase.table("users").update({"notifications": val}).eq("vk_id", vk_id).execute()
 
 async def get_total_users() -> int:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                return c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        return await asyncio.to_thread(_f)
+    resp = supabase.table("users").select("vk_id", count="exact").execute()
+    return resp.count
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        return await conn.fetchval("SELECT COUNT(*) FROM users")
-
-
-async def get_all_users_for_broadcast() -> list[int]:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                rows = c.execute(
-                    "SELECT vk_id FROM users WHERE is_banned=0 AND notifications=1"
-                ).fetchall()
-                return [r[0] for r in rows]
-        return await asyncio.to_thread(_f)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT vk_id FROM users WHERE is_banned=0 AND notifications=1")
-        return [r["vk_id"] for r in rows]
-
+async def get_all_users_for_broadcast() -> List[int]:
+    resp = supabase.table("users").select("vk_id").eq("is_banned", False).eq("notifications", True).execute()
+    return [row["vk_id"] for row in resp.data]
 
 async def get_user_stats(vk_id: int) -> dict:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                incoming = c.execute(
-                    "SELECT COUNT(*) FROM messages WHERE receiver_id=?", (vk_id,)
-                ).fetchone()[0]
-                outgoing = c.execute(
-                    "SELECT COUNT(*) FROM messages WHERE sender_id=?", (vk_id,)
-                ).fetchone()[0]
-                replied = c.execute(
-                    "SELECT COUNT(*) FROM messages WHERE receiver_id=? AND is_replied=1", (vk_id,)
-                ).fetchone()[0]
-                return {"incoming": incoming, "outgoing": outgoing, "replied": replied}
-        return await asyncio.to_thread(_f)
+    incoming = supabase.table("messages").select("id", count="exact").eq("receiver_id", vk_id).execute()
+    outgoing = supabase.table("messages").select("id", count="exact").eq("sender_id", vk_id).execute()
+    replied = supabase.table("messages").select("id", count="exact").eq("receiver_id", vk_id).eq("is_replied", True).execute()
+    return {
+        "incoming": incoming.count,
+        "outgoing": outgoing.count,
+        "replied": replied.count
+    }
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        incoming = await conn.fetchval("SELECT COUNT(*) FROM messages WHERE receiver_id = $1", vk_id)
-        outgoing = await conn.fetchval("SELECT COUNT(*) FROM messages WHERE sender_id = $1", vk_id)
-        replied = await conn.fetchval("SELECT COUNT(*) FROM messages WHERE receiver_id = $1 AND is_replied = 1", vk_id)
-        return {"incoming": incoming, "outgoing": outgoing, "replied": replied}
-
-
-# ─── MESSAGES ─────────────────────────────────────────────────────────────────
+# --- Messages ----------------------------------------------------------
 
 async def save_message(sender_id: int, receiver_id: int, text: str) -> dict:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                cur = c.execute(
-                    "INSERT INTO messages (sender_id,receiver_id,text,created_at) VALUES (?,?,?,?)",
-                    (sender_id, receiver_id, text, _now())
-                )
-                row_id = cur.lastrowid
-                c.execute("UPDATE users SET msg_count=msg_count+1 WHERE vk_id=?", (receiver_id,))
-                return {"id": row_id, "sender_id": sender_id, "receiver_id": receiver_id, "text": text}
-        return await asyncio.to_thread(_f)
+    now = _now_iso()
+    data = {
+        "sender_id": sender_id,
+        "receiver_id": receiver_id,
+        "text": text,
+        "is_replied": False,
+        "is_deleted": False,
+        "created_at": now
+    }
+    resp = supabase.table("messages").insert(data).execute()
+    msg = resp.data[0]
+    # Увеличиваем счётчик сообщений у получателя
+    supabase.table("users").update({"msg_count": supabase.rpc("increment", {"x": 1})}).eq("vk_id", receiver_id).execute()
+    return msg
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        now = _now_ts()
-        row_id = await conn.fetchval("""
-                INSERT INTO messages (sender_id, receiver_id, text, created_at)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id
-            """, sender_id, receiver_id, text, now)
-
-        await conn.execute("UPDATE users SET msg_count = msg_count + 1 WHERE vk_id = $1", receiver_id)
-        return {"id": row_id, "sender_id": sender_id, "receiver_id": receiver_id, "text": text}
-
-
-async def get_message(msg_id: int) -> dict | None:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.row_factory = sqlite3.Row
-                row = c.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
-                return dict(row) if row else None
-        return await asyncio.to_thread(_f)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM messages WHERE id = $1", msg_id)
-        return dict(row) if row else None
-
+async def get_message(msg_id: int) -> Optional[dict]:
+    resp = supabase.table("messages").select("*").eq("id", msg_id).execute()
+    return resp.data[0] if resp.data else None
 
 async def mark_replied(msg_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute("UPDATE messages SET is_replied=1 WHERE id=?", (msg_id,))
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE messages SET is_replied = 1 WHERE id = $1", msg_id)
-
+    supabase.table("messages").update({"is_replied": True}).eq("id", msg_id).execute()
 
 async def mark_deleted(msg_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute("UPDATE messages SET is_deleted=1 WHERE id=?", (msg_id,))
-        await asyncio.to_thread(_f)
-        return
+    supabase.table("messages").update({"is_deleted": True}).eq("id", msg_id).execute()
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE messages SET is_deleted = 1 WHERE id = $1", msg_id)
-
-
-async def get_last_messages(vk_id: int, limit: int = 5) -> list[dict]:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.row_factory = sqlite3.Row
-                rows = c.execute(
-                    "SELECT * FROM messages WHERE receiver_id=? AND is_deleted=0 ORDER BY created_at DESC LIMIT ?",
-                    (vk_id, limit)
-                ).fetchall()
-                return [dict(r) for r in rows]
-        return await asyncio.to_thread(_f)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT * FROM messages 
-            WHERE receiver_id = $1 AND is_deleted = 0 
-            ORDER BY created_at DESC LIMIT $2
-        """, vk_id, limit)
-        return [dict(r) for r in rows]
-
+async def get_last_messages(vk_id: int, limit: int = 5) -> List[dict]:
+    resp = supabase.table("messages").select("*").eq("receiver_id", vk_id).eq("is_deleted", False).order("created_at", desc=True).limit(limit).execute()
+    return resp.data
 
 async def delete_old_messages(days: int = 30):
-    if USE_SQLITE:
-        cutoff_str = (_now_utc_naive() - timedelta(days=days)).isoformat()
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                cur = c.execute("DELETE FROM messages WHERE created_at < ? AND is_deleted = 1", (cutoff_str,))
-                return cur.rowcount
-        deleted = await asyncio.to_thread(_f)
-        logger.info(f"[DB] Удалено старых сообщений: {deleted}")
-        return
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # Удаляем сообщения, помеченные как удалённые и старше cutoff
+    resp = supabase.table("messages").delete().eq("is_deleted", True).lt("created_at", cutoff).execute()
+    logger.info(f"Deleted {len(resp.data)} old messages")
 
-    cutoff_aware = _now_ts() - timedelta(days=days)
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute("DELETE FROM messages WHERE created_at < $1 AND is_deleted = 1", cutoff_aware)
-        logger.info(f"[DB] Очистка завершена: {result}")
-
-# ─── BLOCKED ──────────────────────────────────────────────────────────────────
+# --- Blocked -----------------------------------------------------------
 
 async def block_user(owner_id: int, blocked_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute(
-                    "INSERT OR IGNORE INTO blocked (owner_id, blocked_id) VALUES (?,?)",
-                    (owner_id, blocked_id)
-                )
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO blocked (owner_id, blocked_id) 
-            VALUES ($1, $2) 
-            ON CONFLICT DO NOTHING
-        """, owner_id, blocked_id)
-
+    supabase.table("blocked").insert({"owner_id": owner_id, "blocked_id": blocked_id}).execute()
 
 async def unblock_user(owner_id: int, blocked_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute(
-                    "DELETE FROM blocked WHERE owner_id=? AND blocked_id=?",
-                    (owner_id, blocked_id)
-                )
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM blocked WHERE owner_id = $1 AND blocked_id = $2", owner_id, blocked_id)
-
+    supabase.table("blocked").delete().eq("owner_id", owner_id).eq("blocked_id", blocked_id).execute()
 
 async def is_blocked(owner_id: int, sender_id: int) -> bool:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                row = c.execute(
-                    "SELECT 1 FROM blocked WHERE owner_id=? AND blocked_id=?",
-                    (owner_id, sender_id)
-                ).fetchone()
-                return row is not None
-        return await asyncio.to_thread(_f)
+    resp = supabase.table("blocked").select("owner_id").eq("owner_id", owner_id).eq("blocked_id", sender_id).execute()
+    return len(resp.data) > 0
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT 1 FROM blocked WHERE owner_id = $1 AND blocked_id = $2", owner_id, sender_id)
-        return row is not None
+async def get_blocked_list(owner_id: int) -> List[dict]:
+    resp = supabase.table("blocked").select("blocked_id").eq("owner_id", owner_id).execute()
+    return resp.data
 
-
-async def get_blocked_list(owner_id: int) -> list[dict]:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.row_factory = sqlite3.Row
-                rows = c.execute(
-                    "SELECT blocked_id FROM blocked WHERE owner_id=?", (owner_id,)
-                ).fetchall()
-                return [dict(r) for r in rows]
-        return await asyncio.to_thread(_f)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT blocked_id FROM blocked WHERE owner_id = $1", owner_id)
-        return [dict(r) for r in rows]
-
-
-# ─── BANNED ───────────────────────────────────────────────────────────────────
+# --- Banned ------------------------------------------------------------
 
 async def ban_user(vk_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute(
-                    "INSERT OR IGNORE INTO banned (vk_id, banned_at) VALUES (?,?)",
-                    (vk_id, _now())
-                )
-                c.execute("UPDATE users SET is_banned=1 WHERE vk_id=?", (vk_id,))
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO banned (vk_id, banned_at) 
-            VALUES ($1, $2) 
-            ON CONFLICT DO NOTHING
-        """, vk_id, _now_ts())
-        await conn.execute("UPDATE users SET is_banned = 1 WHERE vk_id = $1", vk_id)
-
+    supabase.table("banned").insert({"vk_id": vk_id, "banned_at": _now_iso()}).execute()
+    supabase.table("users").update({"is_banned": True}).eq("vk_id", vk_id).execute()
 
 async def unban_user(vk_id: int):
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute("DELETE FROM banned WHERE vk_id=?", (vk_id,))
-                c.execute("UPDATE users SET is_banned=0 WHERE vk_id=?", (vk_id,))
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM banned WHERE vk_id = $1", vk_id)
-        await conn.execute("UPDATE users SET is_banned = 0 WHERE vk_id = $1", vk_id)
-
+    supabase.table("banned").delete().eq("vk_id", vk_id).execute()
+    supabase.table("users").update({"is_banned": False}).eq("vk_id", vk_id).execute()
 
 async def is_banned(vk_id: int) -> bool:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                row = c.execute("SELECT 1 FROM banned WHERE vk_id=?", (vk_id,)).fetchone()
-                return row is not None
-        return await asyncio.to_thread(_f)
+    resp = supabase.table("banned").select("vk_id").eq("vk_id", vk_id).execute()
+    return len(resp.data) > 0
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT 1 FROM banned WHERE vk_id = $1", vk_id)
-        return row is not None
-
-
-# ─── REPORTS ──────────────────────────────────────────────────────────────────
+# --- Reports -----------------------------------------------------------
 
 async def add_report(reporter_id: int, msg_id: int) -> int:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                try:
-                    c.execute(
-                        "INSERT INTO reports (message_id, reporter_id, created_at) VALUES (?,?,?)",
-                        (msg_id, reporter_id, _now())
-                    )
-                except sqlite3.IntegrityError:
-                    pass
-                count = c.execute(
-                    "SELECT COUNT(*) FROM reports WHERE message_id=?", (msg_id,)
-                ).fetchone()[0]
-                return count
-        return await asyncio.to_thread(_f)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        try:
-            await conn.execute("""
-                INSERT INTO reports (message_id, reporter_id, created_at)
-                VALUES ($1, $2, $3)
-            """, msg_id, reporter_id, _now_ts())
-        except asyncpg.UniqueViolationError:
-            pass
-        count = await conn.fetchval("SELECT COUNT(*) FROM reports WHERE message_id = $1", msg_id)
-        return count
-
+    try:
+        supabase.table("reports").insert({"message_id": msg_id, "reporter_id": reporter_id, "created_at": _now_iso()}).execute()
+    except Exception:
+        pass
+    resp = supabase.table("reports").select("id", count="exact").eq("message_id", msg_id).execute()
+    return resp.count
 
 async def has_reported(reporter_id: int, msg_id: int) -> bool:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                row = c.execute(
-                    "SELECT 1 FROM reports WHERE message_id=? AND reporter_id=?",
-                    (msg_id, reporter_id)
-                ).fetchone()
-                return row is not None
-        return await asyncio.to_thread(_f)
+    resp = supabase.table("reports").select("id").eq("message_id", msg_id).eq("reporter_id", reporter_id).execute()
+    return len(resp.data) > 0
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT 1 FROM reports WHERE message_id = $1 AND reporter_id = $2", msg_id, reporter_id)
-        return row is not None
-
-
-# ─── AD ───────────────────────────────────────────────────────────────────────
+# --- AD -----------------------------------------------------------------
 
 async def get_ad() -> dict:
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.row_factory = sqlite3.Row
-                row = c.execute("SELECT * FROM ad_settings WHERE id=1").fetchone()
-                return dict(row) if row else {}
-        return await asyncio.to_thread(_f)
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM ad_settings WHERE id = 1")
-        return dict(row) if row else {}
-
+    resp = supabase.table("ad_settings").select("*").eq("id", 1).execute()
+    if resp.data:
+        return resp.data[0]
+    return {"enabled": False, "text": "", "url": "", "btn_text": "📢 Реклама", "place": "AFTER_SEND"}
 
 async def set_ad(**kwargs):
-    if USE_SQLITE:
-        def _f():
-            sets = ", ".join(f"{k}=?" for k in kwargs)
-            vals = list(kwargs.values())
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.execute(f"UPDATE ad_settings SET {sets} WHERE id=1", vals)
-        await asyncio.to_thread(_f)
-        return
-
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        sets = ", ".join(f"{k}=${i+1}" for i, k in enumerate(kwargs.keys()))
-        vals = list(kwargs.values())
-        await conn.execute(f"UPDATE ad_settings SET {sets} WHERE id = 1", *vals)
-
+    supabase.table("ad_settings").update(kwargs).eq("id", 1).execute()
 
 async def is_ad_enabled() -> bool:
     ad = await get_ad()
-    has_content = bool(ad.get("text", "").strip()) or bool(ad.get("url", "").strip())
-    return bool(ad.get("enabled", 0)) and has_content
+    return ad.get("enabled", False) and bool(ad.get("text", "").strip())
 
+# --- Дополнительно ------------------------------------------------------
 
-# ─── ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ (ДЛЯ TASKS И ADMIN) ──────────────────────────────
-
-async def get_inactive_users(days: int = 3) -> list[dict]:
-    """Возвращает список пользователей, которые не проявляли активность N дней."""
-    if USE_SQLITE:
-        cutoff_str = (_now_utc_naive() - timedelta(days=days)).isoformat()
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                c.row_factory = sqlite3.Row
-                rows = c.execute(
-                    "SELECT * FROM users WHERE last_active < ? AND is_banned = 0 AND notifications = 1",
-                    (cutoff_str,)
-                ).fetchall()
-                return [dict(r) for r in rows]
-        return await asyncio.to_thread(_f)
-
-    cutoff_aware = _now_ts() - timedelta(days=days)
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM users WHERE last_active < $1 AND is_banned = 0 AND notifications = 1",
-            cutoff_aware
-        )
-        return [dict(r) for r in rows]
-
+async def get_inactive_users(days: int = 3) -> List[dict]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    resp = supabase.table("users").select("*").lt("last_active", cutoff).eq("is_banned", False).eq("notifications", True).execute()
+    return resp.data
 
 async def get_db_stats() -> dict:
-    """Общая статистика для админ-панели."""
-    if USE_SQLITE:
-        def _f():
-            with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-                msgs = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                banned = c.execute("SELECT COUNT(*) FROM users WHERE is_banned=1").fetchone()[0]
-                return {"users": users, "messages": msgs, "banned": banned}
-        return await asyncio.to_thread(_f)
+    users = supabase.table("users").select("vk_id", count="exact").execute()
+    msgs = supabase.table("messages").select("id", count="exact").execute()
+    banned = supabase.table("users").select("vk_id", count="exact").eq("is_banned", True).execute()
+    return {"users": users.count, "messages": msgs.count, "banned": banned.count}
+async def get_messages_today() -> int:
+    """Возвращает количество сообщений, созданных сегодня."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    resp = supabase.table("messages").select("id", count="exact").gte("created_at", today_start).execute()
+    return resp.count
 
-    pool = await DatabasePool.get_pool()
-    async with pool.acquire() as conn:
-        users = await conn.fetchval("SELECT COUNT(*) FROM users")
-        msgs = await conn.fetchval("SELECT COUNT(*) FROM messages")
-        banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = 1")
-        return {"users": users, "messages": msgs, "banned": banned}
-
-
-# ─── ЗАКРЫТИЕ ПУЛА ───────────────────────────────────────────────────────────
-
-async def close_db():
-    """Закрывает пул соединений (вызывать при остановке бота)"""
-    if not USE_SQLITE:
-        await DatabasePool.close()
-    logger.info("Соединение с БД закрыто")
-
-
-def get_conn():
-    """Вспомогательная функция для legacy-запросов (SQLite)"""
-    if USE_SQLITE:
-        import sqlite3
-        from config import DB_PATH
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-    return None
+async def get_reports_total() -> int:
+    """Возвращает общее количество жалоб."""
+    resp = supabase.table("reports").select("id", count="exact").execute()
+    return resp.count

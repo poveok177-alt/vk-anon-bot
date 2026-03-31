@@ -13,7 +13,7 @@ from config import ADMIN_VK_ID, VK_GROUP_ID, get_message_link
 from database import (
     get_total_users, get_all_users_for_broadcast,
     get_user, ban_user, unban_user, get_user_stats,
-    save_message, get_ad, set_ad, is_ad_enabled,
+    save_message, get_ad, set_ad,
 )
 from keyboards import admin_menu_kb, ad_panel_kb, message_actions_kb
 
@@ -70,39 +70,15 @@ async def cmd_admin(api: API, admin_id: int):
 
 
 async def cmd_stats(api: API, admin_id: int):
+    # Используем универсальные функции database
     total = await get_total_users()
+    db_stats = await get_db_stats()   # эта функция уже есть в database.py
+    msgs_total = db_stats.get("messages", 0)
+    banned = db_stats.get("banned", 0)
 
-    try:
-        from database import get_db_stats
-        db_stats = await get_db_stats()
-        msgs_total = db_stats.get("messages", 0)
-        banned = db_stats.get("banned", 0)
-
-        from database import USE_SQLITE
-        if USE_SQLITE:
-            import sqlite3
-            from config import DB_PATH
-
-            def _today():
-                with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
-                    msgs_today = c.execute(
-                        "SELECT COUNT(*) FROM messages WHERE date(created_at)=date('now')"
-                    ).fetchone()[0]
-                    reports = c.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
-                return msgs_today, reports
-
-            msgs_today, reports = await asyncio.to_thread(_today)
-        else:
-            from database import DatabasePool
-            pool = await DatabasePool.get_pool()
-            async with pool.acquire() as conn:
-                msgs_today = await conn.fetchval(
-                    "SELECT COUNT(*) FROM messages WHERE created_at::date = CURRENT_DATE"
-                )
-                reports = await conn.fetchval("SELECT COUNT(*) FROM reports")
-    except Exception as e:
-        logger.error(f"Ошибка получения статистики: {e}")
-        msgs_total = msgs_today = banned = reports = 0
+    # Сообщения сегодня и жалобы – добавим отдельные запросы
+    msgs_today = await get_messages_today()
+    reports_total = await get_reports_total()
 
     await api.messages.send(
         user_id=admin_id,
@@ -112,7 +88,7 @@ async def cmd_stats(api: API, admin_id: int):
             f"🚫 Забанено: {banned}\n\n"
             f"💬 Сообщений всего: {msgs_total}\n"
             f"💬 Сообщений сегодня: {msgs_today}\n"
-            f"⚠️ Жалоб всего: {reports}"
+            f"⚠️ Жалоб всего: {reports_total}"
         ),
         random_id=_rand(),
     )

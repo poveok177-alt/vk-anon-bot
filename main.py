@@ -1,25 +1,16 @@
-# main.py (исправленная версия — убраны <b> теги)
-"""
-main.py — Точка входа VK-бота анонимных сообщений.
-"""
-
-import asyncio
+# main.py
+import os
 import json
 import logging
+import asyncio
 import random
-import urllib.parse
-from vkbottle.bot import Bot, Message
+from fastapi import FastAPI, Request, Response, HTTPException
 from vkbottle import API
-from vkbottle import Keyboard, KeyboardButtonColor, Text
+from vkbottle import Keyboard, KeyboardButtonColor, Text, Callback, OpenLink
+from vkbottle.bot import Bot
 
-from config import VK_TOKEN, ADMIN_VK_ID, VK_GROUP_ID, get_message_link, get_short_link
-from database import (
-    init_db, get_or_create_user, get_user, get_user_stats,
-    set_notifications, get_blocked_list, unblock_user,
-    block_user, get_message, get_ad, set_ad,
-    get_last_messages, mark_deleted, close_db,
-    USE_SQLITE, DatabasePool,
-)
+from config import VK_TOKEN, GROUP_ID, CONFIRM_TOKEN, ADMIN_VK_ID
+import database as db
 from keyboards import (
     main_menu_kb, message_actions_kb, cancel_kb,
     back_to_menu_kb, settings_kb, blocks_kb, ref_choice_kb,
@@ -30,46 +21,38 @@ from states import (
     STATE_WAITING_MESSAGE, STATE_WAITING_REPLY,
 )
 from anon_message import send_anon_message, handle_reply, handle_report
-from tasks import send_reminders, cleanup_task
-from web import start_web
 import admin as adm
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=VK_TOKEN)
-api: API = bot.api
+app = FastAPI()
 
+# Инициализация Supabase
+db.init_supabase()
 
-def _rand() -> int:
+# VK API клиент
+api = API(token=VK_TOKEN)
+bot = Bot(token=VK_TOKEN, api=api)
+
+# Вспомогательные функции
+def _rand():
     return random.randint(1, 2_147_483_647)
 
-
-def _parse_payload(message: Message) -> dict:
-    """Надёжный парсинг payload из сообщения VK."""
+def _parse_payload(message: dict) -> dict:
     try:
-        p = message.get_payload_json()
-        if p is None:
+        p = message.get("payload")
+        if not p:
             return {}
         if isinstance(p, dict):
             return p
         if isinstance(p, str):
-            try:
-                parsed = json.loads(p)
-                return parsed if isinstance(parsed, dict) else {}
-            except (json.JSONDecodeError, ValueError):
-                return {}
-        return {}
-    except Exception as e:
-        logger.debug(f"[payload] parse error: {e}")
-        return {}
-
+            return json.loads(p)
+    except:
+        pass
+    return {}
 
 def _extract_ref_id(payload: dict, text: str) -> int | None:
-    """Извлекает ID владельца ссылки из всех возможных форматов VK deep link."""
     def _parse_numeric(s: str) -> int | None:
         s = s.strip()
         if not s:
@@ -89,23 +72,18 @@ def _extract_ref_id(payload: dict, text: str) -> int | None:
         raw_hash = str(payload.get("hash", "")).strip()
         ref = _parse_numeric(raw_hash)
         if ref:
-            logger.info(f"[extract_ref] hash='{raw_hash}' → ref={ref}")
             return ref
         ref = _parse_numeric(text)
         if ref:
-            logger.info(f"[extract_ref] hash empty, text='{text}' → ref={ref}")
             return ref
 
     if text.startswith("/start "):
         part = text[7:].strip()
         ref = _parse_numeric(part)
         if ref:
-            logger.info(f"[extract_ref] /start text → ref={ref}")
             return ref
 
-    logger.debug(f"[extract_ref] ref не найден: payload={payload}, text={text!r}")
     return None
-
 
 def _is_start_event(payload: dict, text: str) -> bool:
     return (
@@ -114,56 +92,63 @@ def _is_start_event(payload: dict, text: str) -> bool:
         or text.startswith("/start ")
     )
 
-
 async def get_user_link(vk_id: int) -> str:
-    full_link = get_message_link(VK_GROUP_ID, vk_id)
-    return await get_short_link(full_link)
+    # Простая ссылка на бота с реферальным кодом
+    return f"https://vk.com/club{GROUP_ID}?ref={vk_id}"
 
+# --- Тексты политики (без HTML) ---
+PRIVACY_TEXT = """
+🔒 Политика конфиденциальности
 
-# ─── ПРАВОВЫЕ ТЕКСТЫ (без HTML-тегов) ─────────────────────────────────────────
+📌 Какие данные мы собираем
+• VK ID – для идентификации аккаунта
+• Текст сообщений – для их доставки
+• Дата и время активности – для напоминаний
 
-PRIVACY_TEXT = (
-    "🔒 Политика конфиденциальности\n\n"
-    "📌 Какие данные мы собираем\n"
-    "• VK ID – для идентификации аккаунта\n"
-    "• Текст сообщений – для их доставки\n"
-    "• Дата и время активности – для напоминаний\n\n"
-    "🛡️ Зачем это нужно\n"
-    "• Доставлять анонимные сообщения\n"
-    "• Защищать от спама и злоупотреблений\n"
-    "• Обрабатывать жалобы\n\n"
-    "🤝 Кому мы не передаём данные\n"
-    "Мы не продаём и не передаём данные третьим лицам.\n"
-    "Данные могут быть раскрыты только по официальному запросу.\n\n"
-    "🗑️ Как удалить свои данные\n"
-    "Напишите /issue Удалите мои данные – мы удалим запись за 72 часа.\n\n"
-    "💬 Анонимность\n"
-    "Ваше имя и ID скрыты от получателя.\n"
-    "Полная анонимность не гарантируется при официальном запросе.\n\n"
-    "Используя бота, вы соглашаетесь с данной политикой."
-)
+🛡️ Зачем это нужно
+• Доставлять анонимные сообщения
+• Защищать от спама и злоупотреблений
+• Обрабатывать жалобы
 
-TERMS_TEXT = (
-    "📋 Правила использования\n\n"
-    "Запрещено отправлять:\n"
-    "• Оскорбления, угрозы, преследование\n"
-    "• Призывы к насилию или дискриминации\n"
-    "• Порнографию и непристойный контент\n"
-    "• Спам и массовые рассылки\n"
-    "• Чужие личные данные без согласия\n"
-    "• Контент, нарушающий законодательство\n\n"
-    "⚖️ Права администрации\n"
-    "• Блокировать без предупреждения\n"
-    "• Удалять сообщения\n"
-    "• Передавать данные по официальному запросу\n\n"
-    "⚠️ Ограничение ответственности\n"
-    "Администрация не отвечает за содержание сообщений пользователей.\n\n"
-    "По вопросам: /issue Текст обращения"
-)
+🤝 Кому мы не передаём данные
+Мы не продаём и не передаём данные третьим лицам.
+Данные могут быть раскрыты только по официальному запросу.
 
+🗑️ Как удалить свои данные
+Напишите /issue Удалите мои данные – мы удалим запись за 72 часа.
 
+💬 Анонимность
+Ваше имя и ID скрыты от получателя.
+Полная анонимность не гарантируется при официальном запросе.
+
+Используя бота, вы соглашаетесь с данной политикой.
+"""
+
+TERMS_TEXT = """
+📋 Правила использования
+
+Запрещено отправлять:
+• Оскорбления, угрозы, преследование
+• Призывы к насилию или дискриминации
+• Порнографию и непристойный контент
+• Спам и массовые рассылки
+• Чужие личные данные без согласия
+• Контент, нарушающий законодательство
+
+⚖️ Права администрации
+• Блокировать без предупреждения
+• Удалять сообщения
+• Передавать данные по официальному запросу
+
+⚠️ Ограничение ответственности
+Администрация не отвечает за содержание сообщений пользователей.
+
+По вопросам: /issue Текст обращения
+"""
+
+# --- Основное меню ---
 async def send_main_menu(vk_id: int, text: str | None = None):
-    await get_or_create_user(vk_id)
+    await db.get_or_create_user(vk_id)
     link = await get_user_link(vk_id)
 
     if text is None:
@@ -185,9 +170,7 @@ async def send_main_menu(vk_id: int, text: str | None = None):
         random_id=_rand(),
     )
 
-
 async def send_legal_menu(vk_id: int):
-    """Отправляет меню выбора правового документа."""
     kb = (
         Keyboard(inline=True)
         .add(Text("📋 Правила", payload={"cmd": "terms"}), color=KeyboardButtonColor.PRIMARY)
@@ -203,11 +186,11 @@ async def send_legal_menu(vk_id: int):
         random_id=_rand(),
     )
 
+async def _handle_start(message: dict, ref: int | None):
+    vk_id = message["from_id"]
+    logger.info(f"[start] user={vk_id}, ref={ref} | text={message.get('text', '')!r}")
 
-async def _handle_start(message: Message, ref: int | None):
-    vk_id = message.from_id
-    logger.info(f"[start] user={vk_id}, ref={ref} | text={message.text!r}")
-
+    # Получаем имя пользователя
     try:
         info = await api.users.get(user_ids=[vk_id])
         first_name = info[0].first_name if info else ""
@@ -215,7 +198,7 @@ async def _handle_start(message: Message, ref: int | None):
     except Exception:
         first_name = last_name = ""
 
-    await get_or_create_user(vk_id, first_name, last_name)
+    await db.get_or_create_user(vk_id, first_name, last_name)
 
     if ref is None:
         existing_state = current_state(vk_id)
@@ -225,6 +208,7 @@ async def _handle_start(message: Message, ref: int | None):
 
     clear_state(vk_id)
 
+    # Уведомление админа
     try:
         await api.messages.send(
             user_id=ADMIN_VK_ID,
@@ -235,14 +219,14 @@ async def _handle_start(message: Message, ref: int | None):
         pass
 
     if ref and ref != vk_id:
-        target = await get_user(ref)
+        target = await db.get_user(ref)
         if not target:
             logger.info(f"[start] ref={ref} не найден в БД, пробуем получить из VK API")
             try:
                 info_target = await api.users.get(user_ids=[ref])
                 fn = info_target[0].first_name if info_target else ""
                 ln = info_target[0].last_name if info_target else ""
-                target = await get_or_create_user(ref, fn, ln)
+                target = await db.get_or_create_user(ref, fn, ln)
             except Exception as e:
                 logger.warning(f"[start] Не удалось создать пользователя ref={ref}: {e}")
                 target = None
@@ -267,28 +251,24 @@ async def _handle_start(message: Message, ref: int | None):
 
     await send_main_menu(vk_id)
 
-
 def _ad_should_show(ad: dict, place: str) -> bool:
     return (
-        bool(ad.get("enabled", 0))
-        and ad.get("place", "AFTER_SEND") == place
+        ad.get("enabled", False)
+        and ad.get("place") == place
         and bool(ad.get("text", "").strip())
     )
 
-
-# ─── ЕДИНЫЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ ────────────────────────────────────────
-
-@bot.on.message()
-async def handle_message(message: Message):
-    vk_id = message.from_id
-    text = (message.text or "").strip()
+# --- Обработка сообщения ---
+async def process_message(message: dict):
+    vk_id = message["from_id"]
+    text = (message.get("text") or "").strip()
 
     payload = _parse_payload(message)
     cmd = payload.get("cmd", "")
 
     logger.debug(f"[msg] user={vk_id}, text={text!r}, payload={payload}, cmd={cmd!r}")
 
-    # ── Deep link / кнопка «Начать» ──────────────────────────────────────
+    # Deep link / кнопка «Начать»
     if _is_start_event(payload, text):
         ref_id = _extract_ref_id(payload, text)
         logger.info(f"[start-event] user={vk_id}, ref_id={ref_id}, payload={payload}")
@@ -299,7 +279,6 @@ async def handle_message(message: Message):
         await send_main_menu(vk_id)
         return
 
-    # ── Правовые команды (без HTML) ─────────────────────────────────────
     if text == "/privacy":
         await api.messages.send(user_id=vk_id, message=PRIVACY_TEXT, random_id=_rand())
         return
@@ -307,9 +286,9 @@ async def handle_message(message: Message):
         await api.messages.send(user_id=vk_id, message=TERMS_TEXT, random_id=_rand())
         return
 
-    await get_or_create_user(vk_id)
+    await db.get_or_create_user(vk_id)
 
-    # ── ADMIN COMMANDS ───────────────────────────────────────────────────
+    # Админские команды
     if adm.is_admin(vk_id):
         if text == "/admin":
             await adm.cmd_admin(api, vk_id)
@@ -363,23 +342,23 @@ async def handle_message(message: Message):
             await adm.cmd_ad(api, vk_id)
             return
         if text == "/ad_on":
-            await set_ad(enabled=1)
+            await db.set_ad(enabled=True)
             await api.messages.send(user_id=vk_id, message="✅ Реклама включена.", random_id=_rand())
             return
         if text == "/ad_off":
-            await set_ad(enabled=0)
+            await db.set_ad(enabled=False)
             await api.messages.send(user_id=vk_id, message="❌ Реклама выключена.", random_id=_rand())
             return
         if text.startswith("/ad_text "):
-            await set_ad(text=text[9:].strip())
+            await db.set_ad(text=text[9:].strip())
             await api.messages.send(user_id=vk_id, message="✅ Текст рекламы обновлён.", random_id=_rand())
             return
         if text.startswith("/ad_url "):
-            await set_ad(url=text[8:].strip())
+            await db.set_ad(url=text[8:].strip())
             await api.messages.send(user_id=vk_id, message="✅ URL рекламы обновлён.", random_id=_rand())
             return
         if text.startswith("/ad_btn "):
-            await set_ad(btn_text=text[8:].strip())
+            await db.set_ad(btn_text=text[8:].strip())
             await api.messages.send(user_id=vk_id, message="✅ Текст кнопки обновлён.", random_id=_rand())
             return
         if text.startswith("/ad_place "):
@@ -394,13 +373,13 @@ async def handle_message(message: Message):
             await adm.cmd_ad_preview(api, vk_id)
             return
 
-    # ── Отмена / главное меню ────────────────────────────────────────────
+    # Отмена / главное меню
     if cmd == "main_menu" or text in ("🏠 Главное меню", "❌ Отмена"):
         clear_state(vk_id)
         await send_main_menu(vk_id)
         return
 
-    # ── КНОПКИ: поделиться в сторис, на странице, скопировать текст ──────
+    # Кнопки поделиться
     if cmd == "share_to_stories":
         link = await get_user_link(vk_id)
         command = f"/start {vk_id}"
@@ -470,12 +449,12 @@ async def handle_message(message: Message):
         )
         return
 
-    # ── Обработка выбора действия после перехода по ссылке ───────────────
+    # Выбор действия после перехода по ссылке
     if cmd == "send_to_ref":
         target_id = payload.get("target_id")
         if not target_id:
             return
-        target = await get_user(target_id)
+        target = await db.get_user(target_id)
         if not target or target.get("is_banned"):
             await api.messages.send(
                 user_id=vk_id,
@@ -500,7 +479,7 @@ async def handle_message(message: Message):
 
     state = current_state(vk_id)
 
-    # ── FSM: ввод анонимного сообщения ───────────────────────────────────
+    # FSM: ввод анонимного сообщения
     if state == STATE_WAITING_MESSAGE:
         if not text:
             await api.messages.send(user_id=vk_id, message="⚠️ Отправь текстовое сообщение.", random_id=_rand())
@@ -523,7 +502,7 @@ async def handle_message(message: Message):
         clear_state(vk_id)
         if ok:
             sender_link = await get_user_link(vk_id)
-            ad = await get_ad()
+            ad = await db.get_ad()
             ad_block = ""
             if _ad_should_show(ad, "AFTER_SEND"):
                 ad_block = f"\n\n─────────────\n{ad['text'].strip()}"
@@ -554,7 +533,7 @@ async def handle_message(message: Message):
             )
         return
 
-    # ── FSM: ввод ответа ─────────────────────────────────────────────────
+    # FSM: ввод ответа
     if state == STATE_WAITING_REPLY:
         if not text:
             await api.messages.send(user_id=vk_id, message="⚠️ Отправь текстовое сообщение.", random_id=_rand())
@@ -569,7 +548,7 @@ async def handle_message(message: Message):
             return
         ok, err = await handle_reply(api, vk_id, text)
         if ok:
-            ad = await get_ad()
+            ad = await db.get_ad()
             ad_block = ""
             if _ad_should_show(ad, "AFTER_REPLY"):
                 ad_block = f"\n\n─────────────\n{ad['text'].strip()}"
@@ -588,7 +567,7 @@ async def handle_message(message: Message):
             )
         return
 
-    # ── КНОПКИ (payload) ─────────────────────────────────────────────────
+    # Кнопки (payload)
     if cmd == "my_link":
         link = await get_user_link(vk_id)
         command = f"/start {vk_id}"
@@ -609,7 +588,7 @@ async def handle_message(message: Message):
         return
 
     if cmd == "my_dialogs":
-        msgs = await get_last_messages(vk_id, limit=5)
+        msgs = await db.get_last_messages(vk_id, limit=5)
         if not msgs:
             await api.messages.send(
                 user_id=vk_id,
@@ -632,7 +611,7 @@ async def handle_message(message: Message):
         return
 
     if cmd == "my_stats":
-        stats = await get_user_stats(vk_id)
+        stats = await db.get_user_stats(vk_id)
         link = await get_user_link(vk_id)
         await api.messages.send(
             user_id=vk_id,
@@ -649,8 +628,8 @@ async def handle_message(message: Message):
         return
 
     if cmd == "settings":
-        user = await get_or_create_user(vk_id)
-        notif = bool(user.get("notifications", 1))
+        user = await db.get_user(vk_id)
+        notif = user.get("notifications", True) if user else True
         await api.messages.send(
             user_id=vk_id,
             message="⚙️ Настройки",
@@ -660,9 +639,9 @@ async def handle_message(message: Message):
         return
 
     if cmd == "toggle_notifications":
-        user = await get_or_create_user(vk_id)
-        new_val = not bool(user.get("notifications", 1))
-        await set_notifications(vk_id, new_val)
+        user = await db.get_user(vk_id)
+        new_val = not user.get("notifications", True) if user else True
+        await db.set_notifications(vk_id, new_val)
         status = "включены 🔔" if new_val else "выключены 🔕"
         await api.messages.send(
             user_id=vk_id,
@@ -673,7 +652,7 @@ async def handle_message(message: Message):
         return
 
     if cmd == "my_blocks":
-        blocked = await get_blocked_list(vk_id)
+        blocked = await db.get_blocked_list(vk_id)
         if not blocked:
             await api.messages.send(
                 user_id=vk_id,
@@ -696,7 +675,7 @@ async def handle_message(message: Message):
     if cmd == "unblock":
         blocked_id = payload.get("blocked_id")
         if blocked_id:
-            await unblock_user(vk_id, int(blocked_id))
+            await db.unblock_user(vk_id, int(blocked_id))
             await api.messages.send(
                 user_id=vk_id,
                 message=f"✅ Пользователь {blocked_id} разблокирован.",
@@ -723,7 +702,7 @@ async def handle_message(message: Message):
         msg_id = payload.get("msg_id")
         if not msg_id:
             return
-        original = await get_message(msg_id)
+        original = await db.get_message(msg_id)
         if not original:
             await api.messages.send(
                 user_id=vk_id,
@@ -774,7 +753,7 @@ async def handle_message(message: Message):
         msg_id = payload.get("msg_id")
         if not msg_id:
             return
-        msg = await get_message(msg_id)
+        msg = await db.get_message(msg_id)
         if not msg:
             await api.messages.send(user_id=vk_id, message="⚠️ Сообщение не найдено.", random_id=_rand())
             return
@@ -789,7 +768,7 @@ async def handle_message(message: Message):
                 random_id=_rand(),
             )
             return
-        await block_user(vk_id, msg["sender_id"])
+        await db.block_user(vk_id, msg["sender_id"])
         await api.messages.send(
             user_id=vk_id,
             message="❌ Отправитель заблокирован. Он больше не сможет написать вам.",
@@ -798,7 +777,7 @@ async def handle_message(message: Message):
         )
         return
 
-    # ── Правовые кнопки ─────────────────────────────────────────────────
+    # Правовые кнопки
     if cmd == "legal":
         await send_legal_menu(vk_id)
         return
@@ -809,7 +788,7 @@ async def handle_message(message: Message):
         await api.messages.send(user_id=vk_id, message=TERMS_TEXT, random_id=_rand())
         return
 
-    # ── ADMIN CALLBACKS ──────────────────────────────────────────────────
+    # Admin callbacks
     if adm.is_admin(vk_id):
         if cmd == "adm_stats":
             await adm.cmd_stats(api, vk_id)
@@ -818,27 +797,26 @@ async def handle_message(message: Message):
             await adm.cmd_ad(api, vk_id)
             return
         if cmd == "adm_ad_on":
-            await set_ad(enabled=1)
+            await db.set_ad(enabled=True)
             await api.messages.send(user_id=vk_id, message="✅ Реклама включена.", random_id=_rand())
             return
         if cmd == "adm_ad_off":
-            await set_ad(enabled=0)
+            await db.set_ad(enabled=False)
             await api.messages.send(user_id=vk_id, message="❌ Реклама выключена.", random_id=_rand())
             return
         if cmd == "mod_delete":
             msg_id = payload.get("msg_id")
             if msg_id:
-                await mark_deleted(msg_id)
+                await db.mark_deleted(msg_id)
                 await api.messages.send(user_id=vk_id, message="✅ Сообщение удалено.", random_id=_rand())
             return
         if cmd == "mod_ban":
             sender_id = payload.get("sender_id")
             msg_id = payload.get("msg_id")
             if sender_id:
-                from database import ban_user as _ban
-                await _ban(int(sender_id))
+                await db.ban_user(int(sender_id))
                 if msg_id:
-                    await mark_deleted(msg_id)
+                    await db.mark_deleted(msg_id)
                 await api.messages.send(
                     user_id=vk_id,
                     message=f"🚫 Пользователь {sender_id} забанен.",
@@ -852,7 +830,7 @@ async def handle_message(message: Message):
             await adm.cmd_admin(api, vk_id)
             return
 
-    # ── /issue ───────────────────────────────────────────────────────────
+    # /issue
     if text.startswith("/issue "):
         issue_text = text[7:].strip()
         if issue_text:
@@ -878,23 +856,50 @@ async def handle_message(message: Message):
             )
         return
 
-    # ── Fallback ─────────────────────────────────────────────────────────
+    # Fallback
     await send_main_menu(vk_id)
 
 
-async def startup_db():
-    logger.info("Инициализация базы данных...")
+# --- FastAPI эндпоинты ---
+@app.get("/webhook")
+async def webhook_get(request: Request):
+    # Подтверждение сервера VK
+    return Response(content=CONFIRM_TOKEN, media_type="text/plain")
+
+@app.post("/webhook")
+async def webhook_post(request: Request):
+    data = await request.json()
+    logger.info(f"Received webhook: {data}")
     try:
-        await init_db()
-        logger.info("✅ База данных успешно инициализирована")
-        await start_web(api)
-        bot.loop_wrapper.add_task(send_reminders(api))
-        bot.loop_wrapper.add_task(cleanup_task())
+        # Проверка типа события
+        if data.get("type") == "message_new":
+            message = data["object"]["message"]
+            # Запускаем обработку в фоне, чтобы не блокировать ответ
+            asyncio.create_task(process_message(message))
+        # Можно добавить другие типы (message_reply, и т.д.)
     except Exception as e:
-        logger.error(f"❌ Ошибка инициализации БД: {e}")
-        raise
+        logger.error(f"Error processing webhook: {e}")
+    return Response(content="ok")
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-if __name__ == "__main__":
-    bot.loop_wrapper.add_task(startup_db())
-    bot.run_forever()
+@app.post("/cron/cleanup")
+async def cleanup():
+    """Эндпоинт для вызова по расписанию (например, Vercel Cron)"""
+    try:
+        await db.delete_old_messages(days=30)
+        return {"status": "ok", "message": "Cleanup done"}
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}")
+        return {"status": "error", "message": str(e)}
+
+# Если нужно запускать напоминания, можно сделать аналогичный эндпоинт
+@app.post("/cron/reminders")
+async def reminders():
+    from tasks import send_reminders as _send_reminders
+    # ВАЖНО: send_reminders должен быть адаптирован для однократного вызова (без цикла)
+    # Пока оставим заглушку
+    # await _send_reminders(api)
+    return {"status": "ok", "message": "Reminders not implemented in this version"}

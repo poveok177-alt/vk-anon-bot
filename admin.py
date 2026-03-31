@@ -9,7 +9,7 @@ import logging
 from vkbottle import API
 from vkbottle import Keyboard, KeyboardButtonColor, OpenLink
 
-from config import ADMIN_VK_ID, VK_GROUP_ID, get_message_link
+from config import ADMIN_VK_ID
 from database import (
     get_total_users, get_all_users_for_broadcast,
     get_user, ban_user, unban_user, get_user_stats,

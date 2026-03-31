@@ -883,40 +883,28 @@ async def webhook_post(request: Request):
 async def health():
     return {"status": "ok"}
 
+
 @app.post("/webhook")
 async def webhook_post(request: Request):
     data = await request.json()
     logger.info(f"Received webhook: {data}")
+
+    # Обработка подтверждения сервера
+    if data.get("type") == "confirmation":
+        return Response(content="e978140d", media_type="text/plain")
+
+    # Обработка новых сообщений
     try:
-        # Проверка типа события
         if data.get("type") == "message_new":
             message = data["object"]["message"]
-            # Запускаем обработку в фоне, чтобы не блокировать ответ
             asyncio.create_task(process_message(message))
-        # Можно добавить другие типы (message_reply, и т.д.)
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")
+
     return Response(content="ok")
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
 
-@app.post("/cron/cleanup")
-async def cleanup():
-    """Эндпоинт для вызова по расписанию (например, Vercel Cron)"""
-    try:
-        await db.delete_old_messages(days=30)
-        return {"status": "ok", "message": "Cleanup done"}
-    except Exception as e:
-        logger.error(f"Cleanup error: {e}")
-        return {"status": "error", "message": str(e)}
-
-# Если нужно запускать напоминания, можно сделать аналогичный эндпоинт
-@app.post("/cron/reminders")
-async def reminders():
-    from tasks import send_reminders as _send_reminders
-    # ВАЖНО: send_reminders должен быть адаптирован для однократного вызова (без цикла)
-    # Пока оставим заглушку
-    # await _send_reminders(api)
-    return {"status": "ok", "message": "Reminders not implemented in this version"}
+@app.get("/webhook")
+async def webhook_get(request: Request):
+    # GET запрос для тестирования
+    return Response(content="e978140d", media_type="text/plain")
